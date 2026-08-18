@@ -678,12 +678,113 @@ host-factory hoisting per §4.4) are written down before M1.
 
 This refines Part 2 of
 [`widget-library-implementation-plan.md`](widget-library-implementation-plan.md)
-(the M0–M9 waves, deletion ledger, and verification strategy hold as written)
-with the concrete current-state findings. The wave order, acceptance test
-(cell-identical output), and one-implementation-at-a-time rule are unchanged. The
-additions below are the editor-specific mechanics each wave now needs.
+(the deletion ledger and verification strategy hold as written) with the
+concrete current-state findings. The acceptance test (cell-identical output)
+and the one-implementation-at-a-time rule are unchanged, and so are the wave
+*contents*. What does change is the **direction**: §5.0 argues — and a PoC
+demonstrates — that the frame should migrate **first**, not last, which
+reverses M0's mount point and dissolves M9 into the stages that follow. The
+wave table in §5.2 is kept because its per-surface deletions are still the
+work; read it as *what* each step deletes, with §5.0's stages as *when*.
 
-### 5.0 M0 — the seam (a genuine prototype, not just plumbing)
+### 5.0 Direction — outside-in, and why it inverts the original order
+
+There are two ways to sequence this, and the choice matters more than the
+wave contents.
+
+- **Inside-out** — what the implementation plan's Part 2 assumes, and what the
+  wave table below inherits: mount `fresh-ui` subtrees into rectangles carved
+  by today's frame, migrating leaf surfaces first and the frame **last** (M9).
+- **Outside-in** — make the frame a `fresh-ui` tree **first**, with every
+  region below it a `Host` leaf that the fold paints using today's painters,
+  then replace regions with native descriptions one at a time. The buffer is
+  the last `Host` leaf standing.
+
+**Outside-in is the better order**, for three reasons that all follow from the
+code rather than from taste:
+
+1. **It is the library's native shape.** `Ui::frame(root, size)` takes a
+   whole-frame `Size`; there is no sub-rect mount. Inside-out has to invent one
+   (M0 item 4), build every wave on it, and then delete it at M9. Outside-in
+   uses the API as designed and invents nothing.
+2. **Overlays get real semantics on day one.** A `Layer`'s stacking, modality,
+   dismissal and focus scoping are properties of *being a child of the tree*.
+   Mounted into a rectangle, a migrated context menu still needs the old
+   precedence machinery for everything outside that rectangle — so M2's
+   mechanisms are half-simulated, then redone once the frame inverts. Under the
+   shell, the first migrated overlay is a real `Layer` immediately. That is
+   where the value of this migration actually is (§3).
+3. **The hybrid precedence rule already exists.** Today `Base` is the floor —
+   pointer z0, `layer_rank::EDITOR_BASE` 0, "everything not otherwise
+   claimed". The shell's legacy `Host` leaf *is* that floor. Migrated surfaces
+   sit above it as ordinary tree children, and the legacy region shrinks
+   monotonically. No new precedence concept is introduced during the
+   transition, and the two tables (§2.3) die at the end rather than being
+   emulated throughout.
+
+The costs are real but bounded: the fold callback and caret merge are needed on
+day one (already M0's hard part — earlier, not extra); dispatch runs in three
+stages while the transition lasts (legacy capture band → `fresh-ui` dispatch →
+legacy floor), collapsing to one when the last region migrates; and legacy
+overlays painted after the fold are invisible to `fresh-ui` hit-testing, so the
+legacy capture band — which today already arbitrates exactly this — stays in
+front until overlays migrate.
+
+**What does not change:** the wave *contents* (M1–M8) and the deletion ledger.
+Only the frame's position moves, from last to first.
+
+#### The PoC, and what it found
+
+The whole shell rests on one testable claim: **`fresh-ui` can reproduce the
+editor's frame rectangles exactly.** If it cannot, every region shifts and the
+cell-identical bar is lost at step one. `crates/fresh-editor/tests/ui_shell_frame_parity.rs`
+tests it: it builds the frame skeleton as a `fresh-ui` description, folds it to
+`Draw::Host` items, and compares the rectangles against the ratatui `Layout`
+calls `render.rs` actually makes — across 192 visibility combinations
+(menu / status / search-options / prompt-line / dock / explorer on either side)
+crossed with a grid of terminal sizes.
+
+Two findings:
+
+1. **Parity holds wherever the visible fixed rows fit** — exactly, including
+   the dock and sidebar carves, at every width band from 1 column to 200. The
+   frame layout is five `Length(n)` rows and one `Min(0)`, which
+   `Sizing::Cells` and `flex(1)` reproduce without rounding. The shell can
+   therefore take over the frame with no visible change.
+2. **One divergence, in the deep-squeeze band.** When the visible fixed rows
+   *cannot* all fit (frame height below the number of one-row regions), both
+   engines give the content row nothing and drop a row — but a *different* one:
+   ratatui's solver starves an interior row and keeps the last; `fresh-ui`
+   fills in order and starves the last. `render.rs` flags this band on purpose
+   ("running the actual split … keeps small-terminal squeeze behavior identical
+   by construction").
+
+Finding 2 is **not a layout bug to fix in `fresh-ui`.** It is a signal that
+*which rows are visible* belongs in `build()` as a function of the available
+height — app state deciding structure — rather than being left to
+solver-specific starvation order. Deciding that explicitly is better behavior
+than either engine's accident, and it removes the dependence entirely. It is
+recorded as a decision (§6.2) and pinned by a test so it cannot drift
+unnoticed.
+
+The PoC also surfaced a smaller structural point worth carrying into M0: the
+dock's bail-out rules (`EDITOR_MIN`/`DOCK_MIN`) are **app logic keyed on the
+frame width**, and `build()` cannot read geometry. A real shell resolves that
+width from state before building (a resize is an event like any other), or uses
+`LayoutReader`. The same will be true of every "how wide is the frame" decision
+that currently reads `size` at the top of `render`.
+
+#### Revised stages
+
+| Stage | What moves | Why here |
+|---|---|---|
+| **S1** | Frame skeleton: every region a `Host` leaf, painted by today's painters. Input fully delegated. | The PoC above, plus the fold callback, caret merge, and the three-stage dispatch. Cell output unchanged by construction. |
+| **S2** | The live-derived regions — status bar, search-options row — become native descriptions. | Smallest possible first real swap; both already derive their geometry purely (§2.4). |
+| **S3** | Overlays become real `Layer`s: context menus → dropdowns/menu bar → popups → prompt/palette → modals. | The value stage. Each one deletes guard boxes, a rank entry, and a slice of the capture band. |
+| **S4** | Dock column, file explorer, plugin panels. | Depends on S3's layer semantics; carries the plugin API change. |
+| **S5** | Splits, tabs, scrollbars decompose; the buffer becomes the only `Host` leaf. | Requires the per-leaf `render_content` decision (§6.2); last because it is the only stage that touches the KEEP side. |
+
+### 5.1 M0 — the seam (a genuine prototype, not just plumbing)
 
 M0 is re-scoped from "pure plumbing" to a **prototype gate**: the Host seam
 (§4.4) has never been exercised by any backend, and every wave stands on it.
@@ -701,10 +802,12 @@ Seven pieces:
 3. **`HostLeaf` impls** — `BufferHost` and a terminal-grid host emitting
    `Draw::Host(id)`, with hoisted factories (the `HostSpec::Leaf` pointer-
    equality footgun, §4.4).
-4. **A mount point** — render a `fresh-ui` subtree into a given rect inside the
-   current `Editor::render` frame, and route events landing in that rect to it.
-   This is what lets waves land one surface at a time while the rest of the
-   frame is untouched.
+4. **The frame skeleton** — the whole frame as a `fresh-ui` tree with one
+   `Host` leaf per region, replacing the ratatui `Layout` carves. Proven
+   rect-for-rect against today's layout by
+   `crates/fresh-editor/tests/ui_shell_frame_parity.rs` (§5.0). Under
+   outside-in this replaces the inside-out mount point, which is not built at
+   all.
 5. **Input adapter** — terminal event → `fresh_ui::Input`, and messages back
    out as `UiMsg` (Actions + UI-geometry) into the existing pipeline.
 6. **Caret arbitration** — one "who owns the caret this frame" decision,
@@ -715,13 +818,15 @@ Seven pieces:
    (`view_line_mappings`, cell-theme map) readable by handlers, plus the
    pre-paint path for caret-anchored layers.
 
-**Exit:** a one-line status segment renders and takes a click inside the real
-editor, **and** a prototype `BufferHost` proves the seam end-to-end — real
+**Exit:** the frame renders through the shell with every region still painted
+by today's painters and cell output unchanged, a one-line status segment
+renders and takes a click as a native description, **and** a prototype
+`BufferHost` proves the seam end-to-end — real
 buffer cells under `Draw::Host`, one caret-anchored popup anchored via
 `compute_content_layout`, one click-to-cursor through a `Gesture` handler —
 plus the §4.7 rebuild benchmark. No wave is scheduled until this exit holds.
 
-### 5.1 Waves (increasing risk)
+### 5.2 Waves (increasing risk)
 
 | Wave | Surface | New mechanism exercised | Deletes (survey-grounded) |
 |---|---|---|---|
@@ -740,13 +845,16 @@ dismissal and focus together. If the seam and the model hold there, the later
 waves apply the same mechanisms; if not, the library is corrected before wave
 three rather than after eight surfaces depend on it.
 
-**M9 is last by construction.** Until it lands, `fresh-ui` surfaces are mounted
-*into* the existing frame (the M0 mount point). M9 inverts the relationship: the
-frame becomes a `fresh-ui` tree with `Host` leaves, and the chrome layout code
-in `render.rs` is removed. When M9 lands, `app/chrome/` and the `LayoutBox` arena
-no longer exist, and the two precedence tables are gone. M9 also carries the
-per-leaf-decomposition and scrollbar-marker decisions (§6.2) — its headline
-deletions (fresh-ui tabs, dividers, scrollbars) depend on how they land.
+**M9 dissolves under outside-in.** The wave table above is inherited from the
+inside-out plan, where the frame migrated last. Under §5.0 the frame is S1
+instead, so M9's contents split: the frame layout, dock and explorer carves
+move to the front (S1), and what remains — the split grid, tabs, scrollbars,
+and the removal of `app/chrome/`, `PointerGrab`, `KeyContext` and the two
+precedence tables — becomes S5, the last stage, because it is the only one that
+touches the KEEP side (§6.2). The deletions are the same; only their order
+changes. M2 remains the go/no-go: it is still the first wave to use layers,
+modality, dismissal and focus together, and under the shell it does so for
+real rather than through a mount point.
 
 **Surfaces the wave table doesn't name**, and where they land:
 
@@ -773,7 +881,7 @@ deletions (fresh-ui tabs, dividers, scrollbars) depend on how they land.
 - **Scrollbar overview-ruler markers** (plugin API) — `Draw::Scrollbar` carries
   only `{offset, content, window}`; see §6.2 before M9.
 
-### 5.2 Verification
+### 5.3 Verification
 
 The e2e suite (~315 files) is the primary mechanism, used as-is:
 
@@ -795,7 +903,7 @@ The e2e suite (~315 files) is the primary mechanism, used as-is:
 5. **New `LayoutSpec`-level assertions** by key are *added* alongside the cell
    assertions, not in place of them.
 
-### 5.3 Risks and stop points
+### 5.4 Risks and stop points
 
 1. **L1/L2 semantics are fixed** (they are — Part 1 is done and its deviation
    register is closed). The library is frozen; a wave that needs a library change
@@ -895,13 +1003,19 @@ list.
 6. **Frame scheduling and rebuild cost** (blocks M1). Who calls `ui.frame` and
    when; which subtrees must be `Shared`; what the M0 benchmark (§4.7)
    actually measures at a sustained input rate.
-7. **Frame-buffer animations.** Cell-snapshot effects have no display-list
+7. **Row visibility under squeeze** (blocks S1). When the visible fixed rows
+   cannot fit, `fresh-ui` and ratatui starve different rows (§5.0). Decide
+   which rows `build()` drops as a function of available height, making the
+   choice explicit app state instead of inheriting either engine's starvation
+   order. Pinned today by
+   `squeeze_band_starves_a_different_row_than_ratatui`.
+8. **Frame-buffer animations.** Cell-snapshot effects have no display-list
    expression: keep them as post-processes over the folded buffer (beside
    `convert_buffer_colors`), or retire them deliberately.
-8. **Theme-inspector granularity** (§4.5). Chrome provenance coarsens from
+9. **Theme-inspector granularity** (§4.5). Chrome provenance coarsens from
    per-cell to per-item; confirm the inspector survives, with buffer cells
    keeping the per-cell map via the leaf.
-9. **Wheel-semantics parity** (M4/M5). Today's wheel walk has no dedup and no
+10. **Wheel-semantics parity** (M4/M5). Today's wheel walk has no dedup and no
    opacity gate *by ruling*; `fresh-ui` chains wheels by "a `Viewport` claims
    only if its offset changed." Close but not identical — e.g. a
    scrolled-to-bound popup over the buffer. Land an explicit parity test
