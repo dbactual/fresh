@@ -81,7 +81,18 @@ fn reference(f: Frame, size: Rect) -> Vec<(u64, Rect)> {
                 height: size.height,
             }
         }
-        None => size,
+        None => {
+            out.push((
+                id(HostRegion::Dock),
+                Rect {
+                    x: size.x,
+                    y: size.y,
+                    width: 0,
+                    height: size.height,
+                },
+            ));
+            size
+        }
     };
 
     // The five-row chrome column.
@@ -96,18 +107,12 @@ fn reference(f: Frame, size: Rect) -> Vec<(u64, Rect)> {
         ])
         .split(chrome_area);
 
-    if f.menu_bar {
-        out.push((id(HostRegion::MenuBar), chunks[0]));
-    }
-    if f.status_bar {
-        out.push((id(HostRegion::StatusBar), chunks[2]));
-    }
-    if f.search_options {
-        out.push((id(HostRegion::SearchOptions), chunks[3]));
-    }
-    if f.prompt_line {
-        out.push((id(HostRegion::PromptLine), chunks[4]));
-    }
+    // Every row, whether or not it is drawn: a hidden one still has a
+    // position, and S1b takes these rects verbatim.
+    out.push((id(HostRegion::MenuBar), chunks[0]));
+    out.push((id(HostRegion::StatusBar), chunks[2]));
+    out.push((id(HostRegion::SearchOptions), chunks[3]));
+    out.push((id(HostRegion::PromptLine), chunks[4]));
 
     // split_file_explorer_area on the content row.
     match f.explorer {
@@ -128,7 +133,19 @@ fn reference(f: Frame, size: Rect) -> Vec<(u64, Rect)> {
             out.push((id(HostRegion::Explorer), explorer));
             out.push((id(HostRegion::Body), editor));
         }
-        None => out.push((id(HostRegion::Body), chunks[1])),
+        None => {
+            out.push((id(HostRegion::Body), chunks[1]));
+            // No sidebar: an empty rect where one would begin.
+            out.push((
+                id(HostRegion::Explorer),
+                Rect {
+                    x: chunks[1].x + chunks[1].width,
+                    y: chunks[1].y,
+                    width: 0,
+                    height: chunks[1].height,
+                },
+            ));
+        }
     }
 
     out.sort_by_key(|(id, _)| *id);

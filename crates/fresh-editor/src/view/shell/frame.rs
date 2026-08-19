@@ -116,13 +116,16 @@ impl Frame {
     }
 }
 
-/// The frame description: one `Host` per visible region.
+/// The frame description: one `Host` per region.
+///
+/// **Every** region is present, hidden ones at zero size, mirroring the
+/// `Length(0)` constraints the ratatui layout uses. A hidden row still has a
+/// position and callers use it — the suggestions popup anchors to the prompt
+/// row whether or not that row is drawn — so omitting it would silently move
+/// whatever hangs off it.
 pub fn frame_tree<M: 'static>(f: Frame) -> Node<M> {
-    let mut rows: Vec<Node<M>> = Vec::new();
-    if f.menu_bar {
-        rows.push(region(HostRegion::MenuBar).h(Sizing::Cells(1)));
-    }
-    rows.push(match f.explorer {
+    let cells = |on: bool| Sizing::Cells(on as u16);
+    let body = match f.explorer {
         Some((cols, true)) => row().flex(1).children([
             region(HostRegion::Explorer).w(Sizing::Cells(cols)),
             region(HostRegion::Body).flex(1),
@@ -131,22 +134,24 @@ pub fn frame_tree<M: 'static>(f: Frame) -> Node<M> {
             region(HostRegion::Body).flex(1),
             region(HostRegion::Explorer).w(Sizing::Cells(cols)),
         ]),
-        None => region(HostRegion::Body).flex(1),
-    });
-    if f.status_bar {
-        rows.push(region(HostRegion::StatusBar).h(Sizing::Cells(1)));
-    }
-    if f.search_options {
-        rows.push(region(HostRegion::SearchOptions).h(Sizing::Cells(1)));
-    }
-    if f.prompt_line {
-        rows.push(region(HostRegion::PromptLine).h(Sizing::Cells(1)));
-    }
-    let chrome = col().flex(1).children(rows);
-    match f.dock {
-        Some(w) => row().children([region(HostRegion::Dock).w(Sizing::Cells(w)), chrome]),
-        None => chrome,
-    }
+        // No sidebar: the explorer is still in the tree taking nothing, so it
+        // has a rectangle to report and the body's own is unaffected.
+        None => row().flex(1).children([
+            region(HostRegion::Body).flex(1),
+            region(HostRegion::Explorer).w(Sizing::Cells(0)),
+        ]),
+    };
+    let chrome = col().flex(1).children([
+        region(HostRegion::MenuBar).h(cells(f.menu_bar)),
+        body,
+        region(HostRegion::StatusBar).h(cells(f.status_bar)),
+        region(HostRegion::SearchOptions).h(cells(f.search_options)),
+        region(HostRegion::PromptLine).h(cells(f.prompt_line)),
+    ]);
+    row().children([
+        region(HostRegion::Dock).w(Sizing::Cells(f.dock.unwrap_or(0))),
+        chrome,
+    ])
 }
 
 fn region<M: 'static>(r: HostRegion) -> Node<M> {

@@ -175,94 +175,44 @@ impl Editor {
             prompt_row_visible,
         } = self.bottom_row_flags();
 
-        // Build main vertical layout: [menu_bar, main_content, status_bar, search_options, prompt_line]
-        // Status bar is hidden when suggestions popup is shown
-        // Search options bar is shown when in search prompt
-        let main_chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints(vec![
-                Constraint::Length(if self.active_window_mut().menu_bar_visible {
-                    1
-                } else {
-                    0
-                }), // Menu bar
-                Constraint::Min(0), // Main content area
-                Constraint::Length(
-                    if !self.active_window_mut().status_bar_visible
-                        || has_suggestions
-                        || has_file_browser
-                    {
-                        0
-                    } else {
-                        1
-                    },
-                ), // Status bar (hidden when toggled off or with popups)
-                Constraint::Length(if show_search_options { 1 } else { 0 }), // Search options bar
-                Constraint::Length(
-                    // Prompt line is auto-hidden when no prompt active.
-                    // Overlay prompts (Live Grep, issue #1796) host the
-                    // input row inside the centred frame, so the
-                    // bottom row stays available for editor content
-                    // rather than being reserved as dead space.
-                    if prompt_row_visible { 1 } else { 0 },
-                ), // Prompt line
-            ])
-            .split(chrome_area);
-
-        let menu_bar_area = main_chunks[0];
-        let main_content_area = main_chunks[1];
-        let status_bar_idx = 2;
-        let search_options_idx = 3;
-        let prompt_line_idx = 4;
-
-        // Split the main content area into the explorer sidebar (when shown)
-        // and the editor content area beside it. Painting the explorer is a
-        // separate, composable step that draws only into the returned rect.
-        let (editor_content_area, file_explorer_area) =
-            self.split_file_explorer_area(main_content_area);
-
-        // The migration shell computes this same frame from a `fresh-ui`
-        // description. Run it alongside and assert the two agree, exactly as
-        // the chrome-geometry hoist asserts paint == derivation: in debug
-        // builds this runs on every frame, so the e2e suite is the check that
-        // `fresh-ui` can take the frame over before it actually does.
+        // The frame's geometry comes from the migration shell: one `fresh-ui`
+        // description, laid out once, giving every region its rectangle. This
+        // replaced a vertical `Layout` over five rows plus a horizontal carve
+        // for the sidebar. The two agreed rect for rect over every visibility
+        // combination and terminal size — `tests/ui_shell_frame_parity.rs` is
+        // the standing proof, and it keeps both derivations honest now that
+        // only one of them runs here.
         // See docs/internal/fresh-editor-ui-migration.md (S1).
-        #[cfg(debug_assertions)]
-        {
-            use crate::view::shell::frame::{assert_parity, Frame as ShellFrame, HostRegion};
-            let win = self.active_window();
-            let shell = ShellFrame {
-                menu_bar: win.menu_bar_visible,
-                status_bar: win.status_bar_visible && !has_suggestions && !has_file_browser,
-                search_options: show_search_options,
-                prompt_line: prompt_row_visible,
-                // Already resolved by `compute_dock_split`.
-                dock: dock_area.map(|d| d.width),
-                explorer: file_explorer_area.map(|e| (e.width, e.x == main_content_area.x)),
-            };
-            let mut expected = vec![(HostRegion::Body, editor_content_area)];
-            if shell.menu_bar {
-                expected.push((HostRegion::MenuBar, main_chunks[0]));
-            }
-            if shell.status_bar {
-                expected.push((HostRegion::StatusBar, main_chunks[status_bar_idx]));
-            }
-            if shell.search_options {
-                expected.push((HostRegion::SearchOptions, main_chunks[search_options_idx]));
-            }
-            if shell.prompt_line {
-                expected.push((HostRegion::PromptLine, main_chunks[prompt_line_idx]));
-            }
-            if let Some(dock) = dock_area {
-                expected.push((HostRegion::Dock, dock));
-            }
-            if let Some(explorer) = file_explorer_area {
-                expected.push((HostRegion::Explorer, explorer));
-            }
-            // The shell lays out the whole frame — the dock is its first column,
-            // so it gets `size`, not the dock-excluded `chrome_area`.
-            assert_parity(shell, size, &expected);
-        }
+        let shell = crate::view::shell::frame::Frame {
+            menu_bar: self.active_window().menu_bar_visible,
+            status_bar: self.active_window().status_bar_visible
+                && !has_suggestions
+                && !has_file_browser,
+            search_options: show_search_options,
+            prompt_line: prompt_row_visible,
+            // Already resolved against the frame width by `compute_dock_split`.
+            dock: dock_area.map(|d| d.width),
+            explorer: self.file_explorer_layout_request(chrome_area.width),
+        };
+        let regions = crate::view::shell::frame::region_rects(shell, size);
+        let region = |r: crate::view::shell::frame::HostRegion| -> ratatui::layout::Rect {
+            regions
+                .iter()
+                .find(|(k, _)| *k == r)
+                .map(|(_, rect)| *rect)
+                .unwrap_or_default()
+        };
+        use crate::view::shell::frame::HostRegion;
+        let menu_bar_area = region(HostRegion::MenuBar);
+        let status_bar_area = region(HostRegion::StatusBar);
+        let search_options_area = region(HostRegion::SearchOptions);
+        let prompt_line_area = region(HostRegion::PromptLine);
+        let editor_content_area = region(HostRegion::Body);
+        // Presence is app state, not geometry: a hidden sidebar still has a
+        // (zero-width) rectangle, and callers distinguish the two by `Option`.
+        let file_explorer_area = shell.explorer.map(|_| region(HostRegion::Explorer));
+        self.active_layout_mut().file_explorer_area = file_explorer_area;
+
         // Where the sidebar wants the hardware caret (its selected row) when
         // it owns the keyboard. Committed at the very end of this draw, with
         // the editor's caret, so overlays painted after the sidebar can
@@ -923,25 +873,20 @@ impl Editor {
 
         // Status bar (hidden when toggled off, or when a suggestions/file-
         // browser popup covers the bottom row).
-        self.render_status_bar_row(
-            frame,
-            main_chunks[status_bar_idx],
-            has_suggestions,
-            has_file_browser,
-        );
+        self.render_status_bar_row(frame, status_bar_area, has_suggestions, has_file_browser);
 
         // Search-options bar (case / whole-word / regex / confirm toggles),
         // shown only while a search-style prompt is active.
         self.render_search_options_bar(
             frame,
-            main_chunks[search_options_idx],
+            search_options_area,
             show_search_options,
             &theme,
             &keybindings_cloned,
         );
 
         // Prompt input line (non-overlay prompts only).
-        self.render_prompt_line(frame, main_chunks[prompt_line_idx], &prompt, &theme);
+        self.render_prompt_line(frame, prompt_line_area, &prompt, &theme);
 
         // Float-overlay preview: load the selected match's file (if
         // the file changed) and seed the phantom leaf's cursor before
@@ -953,7 +898,7 @@ impl Editor {
 
         // Render file browser popup or suggestions popup AFTER status bar + prompt,
         // so they overlay on top of both (fixes bottom border being overwritten by status bar)
-        self.render_prompt_popups(frame, main_chunks[prompt_line_idx], chrome_area);
+        self.render_prompt_popups(frame, prompt_line_area, chrome_area);
 
         // Render popups from the active buffer state
         // Clone theme to avoid borrow checker issues with active_state_mut()
@@ -1623,58 +1568,34 @@ impl Editor {
         self.active_chrome_mut().workspace_trust_dialog = trust_layout;
     }
 
-    /// Split `main_content_area` into the editor content area and the
-    /// file-explorer sidebar rect, updating the cached explorer rect for hit
-    /// testing. Returns `(editor_content_area, explorer_rect)`, where
-    /// `explorer_rect` is `None` when the explorer is hidden (the whole region
-    /// is the editor's). The split is kept while a sync is in progress, to
-    /// avoid a one-frame flicker. This decides layout only — painting the
-    /// sidebar is [`render_file_explorer`], which draws into the returned rect.
-    fn split_file_explorer_area(
-        &mut self,
-        main_content_area: ratatui::layout::Rect,
-    ) -> (ratatui::layout::Rect, Option<ratatui::layout::Rect>) {
-        let file_explorer_should_show = self.file_explorer_visible()
+    /// Whether a file-explorer sidebar is showing, and if so how many columns
+    /// it wants and which side it sits on.
+    ///
+    /// A *decision*, not a layout: the shell turns this into rectangles (see
+    /// the frame layout at the top of `render`). Splitting the two is what let
+    /// the geometry move to `fresh-ui` without moving the policy with it.
+    fn file_explorer_layout_request(&self, chrome_width: u16) -> Option<(u16, bool)> {
+        let should_show = self.file_explorer_visible()
             && (self.file_explorer().is_some()
                 || self.active_window().file_explorer_sync_in_progress);
-
-        if !file_explorer_should_show {
-            // No file explorer: use entire main content area for editor
-            self.active_layout_mut().file_explorer_area = None;
-            return (main_content_area, None);
+        if !should_show {
+            return None;
         }
-
-        // Split horizontally based on side placement
         tracing::trace!(
             "render: file explorer layout active (present={}, sync_in_progress={}, side={:?})",
             self.file_explorer().is_some(),
             self.active_window().file_explorer_sync_in_progress,
             self.active_window().file_explorer_side
         );
-        let explorer_cols = self
+        let cols = self
             .active_window()
             .file_explorer_width
-            .to_cols(main_content_area.width);
-
-        let (explorer_area, editor_area) = match self.active_window().file_explorer_side {
-            FileExplorerSide::Left => {
-                let chunks = Layout::default()
-                    .direction(Direction::Horizontal)
-                    .constraints([Constraint::Length(explorer_cols), Constraint::Min(0)])
-                    .split(main_content_area);
-                (chunks[0], chunks[1])
-            }
-            FileExplorerSide::Right => {
-                let chunks = Layout::default()
-                    .direction(Direction::Horizontal)
-                    .constraints([Constraint::Min(0), Constraint::Length(explorer_cols)])
-                    .split(main_content_area);
-                (chunks[1], chunks[0])
-            }
-        };
-
-        self.active_layout_mut().file_explorer_area = Some(explorer_area);
-        (editor_area, Some(explorer_area))
+            .to_cols(chrome_width);
+        let on_left = matches!(
+            self.active_window().file_explorer_side,
+            FileExplorerSide::Left
+        );
+        Some((cols, on_left))
     }
 
     /// Paint the file-explorer sidebar into `area`. Composable: it draws only

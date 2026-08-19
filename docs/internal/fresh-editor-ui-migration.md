@@ -883,17 +883,37 @@ The assertion deliberately skips the squeeze band (frame shorter than its fixed
 rows), where the two engines starve different rows by design. That is the
 decision recorded in §6.2, not a defect, and it is pinned separately.
 
-**S1b** — once S1a is quiet across the suite, delete `compute_dock_split`, the
-five-row `Layout`, and `split_file_explorer_area`, and take the rectangles from
-the shell. At that point the frame is `fresh-ui`, every region is still painted
-by its existing painter through `HostPainter`, and the stages below replace
-them one at a time.
+**S1b** — **landed.** S1a came back clean across the whole e2e suite, so the
+frame's geometry now comes from the shell: one description, laid out once,
+giving every region its rectangle. The five-row `Layout` and the sidebar carve
+are gone from `render`.
+
+Three things were needed to make the swap safe, and they are the reusable part
+of the lesson:
+
+- **Hidden regions still have positions.** A zero-height prompt row is where
+  the suggestions popup anchors, so the description carries *every* region,
+  hidden ones at zero size, mirroring the `Length(0)` constraints the ratatui
+  layout used. The parity test compares all seven, empty ones included.
+- **Decisions and geometry separate cleanly.** `split_file_explorer_area` both
+  decided whether a sidebar shows and computed where it goes; it is now
+  `file_explorer_layout_request`, which answers only "is there one, how wide,
+  which side". The shell turns that into rectangles. Splitting the two is what
+  let the geometry move without the policy moving with it.
+- **Presence is app state, not geometry.** A hidden sidebar has a zero-width
+  rectangle like anything else, so callers keep distinguishing the two by
+  `Option` rather than by measuring.
+
+The S1a assertion is removed with the code it checked — with only one
+derivation left in `render`, it would have compared the shell against itself.
+`tests/ui_shell_frame_parity.rs` keeps both honest instead, and covers far more
+combinations than a running editor reaches.
 
 #### Revised stages
 
 | Stage | What moves | Why here |
 |---|---|---|
-| **S1** | Frame skeleton: every region a `Host` leaf, painted by today's painters. Input fully delegated. | The PoC above, plus the fold callback, caret merge, and the three-stage dispatch. Cell output unchanged by construction. Landed incrementally: **S1a** runs the shell alongside the existing layout and debug-asserts they agree (below); **S1b** deletes the ratatui carves and takes the shell's rects. |
+| **S1** | Frame skeleton: every region a `Host` leaf, painted by today's painters. Input fully delegated. | **S1a and S1b landed.** The frame's geometry is the shell's; every region is still painted by its existing painter. Remaining: routing paint itself through the fold, the three-stage dispatch, and threading real `BodyState`. |
 | **S2** | The live-derived regions — status bar, search-options row — become native descriptions. | Smallest possible first real swap; both already derive their geometry purely (§2.4). |
 | **S3** | Overlays become real `Layer`s: context menus → dropdowns/menu bar → popups → prompt/palette → modals. | The value stage. Each one deletes guard boxes, a rank entry, and a slice of the capture band. |
 | **S4** | Dock column, file explorer, plugin panels. | Depends on S3's layer semantics; carries the plugin API change. |
