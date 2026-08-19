@@ -823,11 +823,37 @@ width from state before building (a resize is an event like any other), or uses
 `LayoutReader`. The same will be true of every "how wide is the frame" decision
 that currently reads `size` at the top of `render`.
 
+#### Landing S1 without a flag day
+
+The frame does not have to switch over in one commit. This codebase already has
+the right technique for hoisting geometry: when the chrome-layout work moved
+surfaces from paint-recorded caches to live derivations, the paint pass
+**debug-asserted that paint == derivation** before the cache was deleted
+(§2.4). The same applies here.
+
+**S1a** — `Editor::render` builds the shell's `Frame` from the same visibility
+flags it already computes, runs `region_rects`, and `debug_assert`s every
+region against the rectangle the ratatui `Layout` just produced. In debug
+builds this runs on every frame, so the ~315-file e2e suite becomes the check
+that `fresh-ui` can take the frame over — thousands of real frames at real
+sizes, with real dock, explorer, prompt and suggestion states. Release builds
+are untouched, and nothing about painting changes.
+
+The assertion deliberately skips the squeeze band (frame shorter than its fixed
+rows), where the two engines starve different rows by design. That is the
+decision recorded in §6.2, not a defect, and it is pinned separately.
+
+**S1b** — once S1a is quiet across the suite, delete `compute_dock_split`, the
+five-row `Layout`, and `split_file_explorer_area`, and take the rectangles from
+the shell. At that point the frame is `fresh-ui`, every region is still painted
+by its existing painter through `HostPainter`, and the stages below replace
+them one at a time.
+
 #### Revised stages
 
 | Stage | What moves | Why here |
 |---|---|---|
-| **S1** | Frame skeleton: every region a `Host` leaf, painted by today's painters. Input fully delegated. | The PoC above, plus the fold callback, caret merge, and the three-stage dispatch. Cell output unchanged by construction. |
+| **S1** | Frame skeleton: every region a `Host` leaf, painted by today's painters. Input fully delegated. | The PoC above, plus the fold callback, caret merge, and the three-stage dispatch. Cell output unchanged by construction. Landed incrementally: **S1a** runs the shell alongside the existing layout and debug-asserts they agree (below); **S1b** deletes the ratatui carves and takes the shell's rects. |
 | **S2** | The live-derived regions — status bar, search-options row — become native descriptions. | Smallest possible first real swap; both already derive their geometry purely (§2.4). |
 | **S3** | Overlays become real `Layer`s: context menus → dropdowns/menu bar → popups → prompt/palette → modals. | The value stage. Each one deletes guard boxes, a rank entry, and a slice of the capture band. |
 | **S4** | Dock column, file explorer, plugin panels. | Depends on S3's layer semantics; carries the plugin API change. |

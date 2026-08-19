@@ -152,3 +152,77 @@ pub fn frame_tree<M: 'static>(f: Frame) -> Node<M> {
 fn region<M: 'static>(r: HostRegion) -> Node<M> {
     host(r.id())
 }
+
+/// The rectangle the shell assigns each visible region, for a frame of `size`.
+///
+/// This is the shell's answer to the question `Editor::render` currently
+/// answers with `compute_dock_split` + a vertical `Layout` +
+/// `split_file_explorer_area`. Running both and comparing is how the frame
+/// migrates onto `fresh-ui` without a flag day: see
+/// [`assert_parity`].
+pub fn region_rects(f: Frame, size: ratatui::layout::Rect) -> Vec<(HostRegion, ratatui::layout::Rect)> {
+    use fresh_ui::{Draw, Size, Ui};
+
+    let mut ui: Ui<()> = Ui::new();
+    let spec = ui.frame(frame_tree(f), Size::new(size.width, size.height));
+    let mut out: Vec<(HostRegion, ratatui::layout::Rect)> = spec
+        .items
+        .iter()
+        .filter_map(|it| match &it.draw {
+            Draw::Host(id) => HostRegion::from_host_id(*id).map(|r| {
+                (
+                    r,
+                    ratatui::layout::Rect {
+                        // The shell lays out from the frame origin; the caller
+                        // renders into `size`, which may be offset.
+                        x: size.x.saturating_add(it.rect.x.max(0) as u16),
+                        y: size.y.saturating_add(it.rect.y.max(0) as u16),
+                        width: it.rect.w,
+                        height: it.rect.h,
+                    },
+                )
+            }),
+            _ => None,
+        })
+        .collect();
+    out.sort_by_key(|(r, _)| *r);
+    out
+}
+
+/// Debug-only: check the shell reproduces the rectangles the existing layout
+/// produced, and report every disagreement at once.
+///
+/// This is the same technique the chrome-geometry hoist used — the paint pass
+/// asserts that the live derivation agrees with what it just painted — applied
+/// to the frame. In debug builds it runs on every real frame, so the whole e2e
+/// suite becomes the verification that the shell can take the frame over.
+///
+/// Skipped in the squeeze band (frame shorter than its fixed rows), where the
+/// two layout engines deliberately starve different rows; that case is pinned
+/// by `squeeze_band_starves_a_different_row_than_ratatui` and is a decision
+/// recorded in the migration doc, not a defect.
+#[cfg(debug_assertions)]
+pub fn assert_parity(
+    f: Frame,
+    size: ratatui::layout::Rect,
+    expected: &[(HostRegion, ratatui::layout::Rect)],
+) {
+    if size.height < f.fixed_rows() || size.width == 0 || size.height == 0 {
+        return;
+    }
+    let got = region_rects(f, size);
+    for (region, want) in expected {
+        let Some((_, have)) = got.iter().find(|(r, _)| r == region) else {
+            debug_assert!(
+                false,
+                "shell frame parity: {region:?} missing from the shell layout \
+                 (frame {size:?}, {f:?})"
+            );
+            continue;
+        };
+        debug_assert_eq!(
+            have, want,
+            "shell frame parity: {region:?} disagrees (frame {size:?}, {f:?})"
+        );
+    }
+}

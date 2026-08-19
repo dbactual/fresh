@@ -220,6 +220,50 @@ impl Editor {
         // separate, composable step that draws only into the returned rect.
         let (editor_content_area, file_explorer_area) =
             self.split_file_explorer_area(main_content_area);
+
+        // The migration shell computes this same frame from a `fresh-ui`
+        // description. Run it alongside and assert the two agree, exactly as
+        // the chrome-geometry hoist asserts paint == derivation: in debug
+        // builds this runs on every frame, so the e2e suite is the check that
+        // `fresh-ui` can take the frame over before it actually does.
+        // See docs/internal/fresh-editor-ui-migration.md (S1).
+        #[cfg(debug_assertions)]
+        {
+            use crate::view::shell::frame::{assert_parity, Frame as ShellFrame, HostRegion};
+            let win = self.active_window();
+            let shell = ShellFrame {
+                menu_bar: win.menu_bar_visible,
+                status_bar: win.status_bar_visible && !has_suggestions && !has_file_browser,
+                search_options: show_search_options,
+                prompt_line: prompt_row_visible,
+                // Already resolved by `compute_dock_split`.
+                dock: dock_area.map(|d| d.width),
+                explorer: file_explorer_area
+                    .map(|e| (e.width, e.x == main_content_area.x)),
+            };
+            let mut expected = vec![(HostRegion::Body, editor_content_area)];
+            if shell.menu_bar {
+                expected.push((HostRegion::MenuBar, main_chunks[0]));
+            }
+            if shell.status_bar {
+                expected.push((HostRegion::StatusBar, main_chunks[status_bar_idx]));
+            }
+            if shell.search_options {
+                expected.push((HostRegion::SearchOptions, main_chunks[search_options_idx]));
+            }
+            if shell.prompt_line {
+                expected.push((HostRegion::PromptLine, main_chunks[prompt_line_idx]));
+            }
+            if let Some(dock) = dock_area {
+                expected.push((HostRegion::Dock, dock));
+            }
+            if let Some(explorer) = file_explorer_area {
+                expected.push((HostRegion::Explorer, explorer));
+            }
+            // The shell lays out the whole frame — the dock is its first column,
+            // so it gets `size`, not the dock-excluded `chrome_area`.
+            assert_parity(shell, size, &expected);
+        }
         // Where the sidebar wants the hardware caret (its selected row) when
         // it owns the keyboard. Committed at the very end of this draw, with
         // the editor's caret, so overlays painted after the sidebar can
