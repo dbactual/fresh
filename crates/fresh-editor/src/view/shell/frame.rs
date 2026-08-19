@@ -160,7 +160,10 @@ fn region<M: 'static>(r: HostRegion) -> Node<M> {
 /// `split_file_explorer_area`. Running both and comparing is how the frame
 /// migrates onto `fresh-ui` without a flag day: see
 /// [`assert_parity`].
-pub fn region_rects(f: Frame, size: ratatui::layout::Rect) -> Vec<(HostRegion, ratatui::layout::Rect)> {
+pub fn region_rects(
+    f: Frame,
+    size: ratatui::layout::Rect,
+) -> Vec<(HostRegion, ratatui::layout::Rect)> {
     use fresh_ui::{Draw, Size, Ui};
 
     let mut ui: Ui<()> = Ui::new();

@@ -194,6 +194,9 @@ fn _the_ui_must_not_live_on_the_editor(
 ) {
     use crate::view::shell::frame::frame_tree;
     let palette = |_: &fresh_ui::ThemeKey| ratatui::style::Style::default();
-    let spec = ui.frame(frame_tree(frame), fresh_ui::Size::new(buf.area.width, buf.area.height));
+    let spec = ui.frame(
+        frame_tree(frame),
+        fresh_ui::Size::new(buf.area.width, buf.area.height),
+    );
     let _caret = crate::view::shell::fold::fold(spec, buf, &palette, editor);
 }

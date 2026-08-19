@@ -238,8 +238,7 @@ impl Editor {
                 prompt_line: prompt_row_visible,
                 // Already resolved by `compute_dock_split`.
                 dock: dock_area.map(|d| d.width),
-                explorer: file_explorer_area
-                    .map(|e| (e.width, e.x == main_content_area.x)),
+                explorer: file_explorer_area.map(|e| (e.width, e.x == main_content_area.x)),
             };
             let mut expected = vec![(HostRegion::Body, editor_content_area)];
             if shell.menu_bar {

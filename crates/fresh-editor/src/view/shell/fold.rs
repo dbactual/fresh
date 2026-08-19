@@ -102,7 +102,11 @@ pub fn fold(
                 let track = rect.height.max(1);
                 let (top, len) = Draw::scrollbar_thumb(*offset, *content, track);
                 for i in 0..track {
-                    let ch = if i >= top && i < top + len { '█' } else { '│' };
+                    let ch = if i >= top && i < top + len {
+                        '█'
+                    } else {
+                        '│'
+                    };
                     put(buf, rect.x, rect.y.saturating_add(i), ch, style, clip);
                 }
             }

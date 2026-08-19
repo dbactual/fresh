@@ -172,7 +172,12 @@ fn sweep(sizes: &[(u16, u16)]) -> Vec<String> {
             if h < f.fixed_rows() {
                 continue; // the squeeze band — see the test below
             }
-            let size = Rect { x: 0, y: 0, width: w, height: h };
+            let size = Rect {
+                x: 0,
+                y: 0,
+                width: w,
+                height: h,
+            };
             let got = fold(f, size);
             let want = reference(f, size);
             if got != want {
@@ -234,7 +239,12 @@ fn squeeze_band_starves_a_different_row_than_ratatui() {
         dock: None,
         explorer: None,
     };
-    let size = Rect { x: 0, y: 0, width: 50, height: 2 };
+    let size = Rect {
+        x: 0,
+        y: 0,
+        width: 50,
+        height: 2,
+    };
     let got = fold(f, size);
     let want = reference(f, size);
     assert_ne!(
@@ -245,7 +255,21 @@ fn squeeze_band_starves_a_different_row_than_ratatui() {
 
     let h = |v: &Vec<(u64, Rect)>, id: u64| v.iter().find(|(i, _)| *i == id).unwrap().1.height;
     // fresh-ui fills in order: status and search get their row, prompt starves.
-    assert_eq!((h(&got, id(HostRegion::StatusBar)), h(&got, id(HostRegion::SearchOptions)), h(&got, id(HostRegion::PromptLine))), (1, 1, 0));
+    assert_eq!(
+        (
+            h(&got, id(HostRegion::StatusBar)),
+            h(&got, id(HostRegion::SearchOptions)),
+            h(&got, id(HostRegion::PromptLine))
+        ),
+        (1, 1, 0)
+    );
     // ratatui keeps the last row and starves the interior one instead.
-    assert_eq!((h(&want, id(HostRegion::StatusBar)), h(&want, id(HostRegion::SearchOptions)), h(&want, id(HostRegion::PromptLine))), (1, 0, 1));
+    assert_eq!(
+        (
+            h(&want, id(HostRegion::StatusBar)),
+            h(&want, id(HostRegion::SearchOptions)),
+            h(&want, id(HostRegion::PromptLine))
+        ),
+        (1, 0, 1)
+    );
 }
