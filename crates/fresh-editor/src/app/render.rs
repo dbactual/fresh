@@ -194,7 +194,26 @@ impl Editor {
             dock: dock_area.map(|d| d.width),
             explorer: self.file_explorer_layout_request(chrome_area.width),
         };
-        let regions = crate::view::shell::frame::region_rects(shell, size);
+        // The shell's tree is retained across frames — element state, focus
+        // and the dirty set live on it — so it is moved out for the duration
+        // of the frame rather than borrowed from `self`. See `Editor::shell_ui`.
+        let mut ui = self
+            .shell_ui
+            .take()
+            .unwrap_or_else(|| fresh_ui::Ui::new().into());
+        let regions = {
+            let spec = ui.frame(
+                crate::view::shell::frame::frame_tree(shell),
+                fresh_ui::Size::new(size.width, size.height),
+            );
+            crate::view::shell::frame::regions_of(spec, size)
+        };
+        // Paint whatever the tree owns outright. Host regions are skipped here
+        // and painted by their existing painters below, at the rectangles the
+        // same layout just produced — that is what lets regions migrate one at
+        // a time instead of all at once.
+        crate::view::shell::fold::fold_native(ui.spec(), frame.buffer_mut(), &self.shell_palette());
+        self.shell_ui = Some(ui);
         let region = |r: crate::view::shell::frame::HostRegion| -> ratatui::layout::Rect {
             regions
                 .iter()

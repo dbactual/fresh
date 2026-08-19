@@ -165,14 +165,16 @@ fn region<M: 'static>(r: HostRegion) -> Node<M> {
 /// `split_file_explorer_area`. Running both and comparing is how the frame
 /// migrates onto `fresh-ui` without a flag day: see
 /// [`assert_parity`].
-pub fn region_rects(
-    f: Frame,
+/// The host regions of a display list the caller already produced.
+///
+/// [`region_rects`] is the standalone form, for tests and for callers with no
+/// `Ui` of their own; this is the form `render` uses, so the frame is laid out
+/// once and both the rectangles and the painted output come from it.
+pub fn regions_of(
+    spec: &fresh_ui::LayoutSpec,
     size: ratatui::layout::Rect,
 ) -> Vec<(HostRegion, ratatui::layout::Rect)> {
-    use fresh_ui::{Draw, Size, Ui};
-
-    let mut ui: Ui<()> = Ui::new();
-    let spec = ui.frame(frame_tree(f), Size::new(size.width, size.height));
+    use fresh_ui::Draw;
     let mut out: Vec<(HostRegion, ratatui::layout::Rect)> = spec
         .items
         .iter()
@@ -181,8 +183,6 @@ pub fn region_rects(
                 (
                     r,
                     ratatui::layout::Rect {
-                        // The shell lays out from the frame origin; the caller
-                        // renders into `size`, which may be offset.
                         x: size.x.saturating_add(it.rect.x.max(0) as u16),
                         y: size.y.saturating_add(it.rect.y.max(0) as u16),
                         width: it.rect.w,
@@ -195,6 +195,17 @@ pub fn region_rects(
         .collect();
     out.sort_by_key(|(r, _)| *r);
     out
+}
+
+pub fn region_rects(
+    f: Frame,
+    size: ratatui::layout::Rect,
+) -> Vec<(HostRegion, ratatui::layout::Rect)> {
+    use fresh_ui::{Size, Ui};
+
+    let mut ui: Ui<()> = Ui::new();
+    let spec = ui.frame(frame_tree(f), Size::new(size.width, size.height));
+    regions_of(spec, size)
 }
 
 /// Debug-only: check the shell reproduces the rectangles the existing layout

@@ -23,6 +23,7 @@ use std::collections::{HashMap, HashSet};
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
+use ratatui::style::Style;
 
 use crate::app::types::ViewLineMapping;
 use crate::app::Editor;
@@ -199,4 +200,78 @@ fn _the_ui_must_not_live_on_the_editor(
         fresh_ui::Size::new(buf.area.width, buf.area.height),
     );
     let _caret = crate::view::shell::fold::fold(spec, buf, &palette, editor);
+}
+
+/// The backend's half of theming: a theme name resolved to concrete colours.
+///
+/// `fresh-ui` never says what anything looks like — an item carries a
+/// [`ThemeKey`], a name for *where its appearance comes from*, and mapping that
+/// name is the backend's job. This is the same lookup `*Colors::from_theme`
+/// performs for the existing controls, expressed once for the shell.
+///
+/// It is a snapshot of the colours rather than a borrow of the theme, so the
+/// fold can hold it while the rest of the editor is mutably borrowed.
+pub struct ShellPalette {
+    status: Style,
+    base: Style,
+}
+
+impl crate::view::shell::fold::Palette for ShellPalette {
+    fn style(&self, theme: &fresh_ui::ThemeKey) -> Style {
+        match theme.as_str() {
+            // Grown as regions migrate; an unknown name falls back rather than
+            // failing, so a new surface renders plainly before it is themed.
+            "status" => self.status,
+            _ => self.base,
+        }
+    }
+}
+
+impl Editor {
+    /// Snapshot the colours the shell's themes resolve to this frame.
+    pub(crate) fn shell_palette(&self) -> ShellPalette {
+        let theme = self.theme.read().unwrap();
+        ShellPalette {
+            status: Style::default()
+                .fg(theme.status_bar_fg)
+                .bg(theme.status_bar_bg),
+            base: Style::default().fg(theme.editor_fg).bg(theme.editor_bg),
+        }
+    }
+}
+
+impl Editor {
+    /// Offer an input to the shell's tree before the legacy path sees it.
+    ///
+    /// The first of the three stages S1 describes: the legacy modal-capture
+    /// band still runs ahead of everything, the shell is offered the event
+    /// next, and the existing walk remains the floor. Returns whether the tree
+    /// claimed it.
+    ///
+    /// Today no node in the tree carries a handler — every region is a `Host`
+    /// leaf standing in for a painter that has not migrated — so this always
+    /// declines and every event reaches the legacy path exactly as before.
+    /// That is the point: the seam is in place and inert, and a surface starts
+    /// taking its own input the moment it stops being a `Host`.
+    pub(crate) fn shell_dispatch(&mut self, input: fresh_ui::Input) -> bool {
+        let Some(mut ui) = self.shell_ui.take() else {
+            return false;
+        };
+        let msgs = ui.dispatch(input);
+        self.shell_ui = Some(ui);
+        if msgs.is_empty() {
+            return false;
+        }
+        for msg in msgs {
+            match msg {
+                crate::view::shell::msg::UiMsg::Action(action) => {
+                    // Straight into the pipeline that has always applied
+                    // actions; nothing about it changes.
+                    let _ = self.handle_action(action);
+                }
+                crate::view::shell::msg::UiMsg::Ui(_) => {}
+            }
+        }
+        true
+    }
 }

@@ -55,6 +55,24 @@ impl<F: Fn(&ThemeKey) -> Style> Palette for F {
     }
 }
 
+/// Paint only what the tree owns outright, leaving host regions to their own
+/// painters.
+///
+/// The migration's working state: the frame is a `fresh-ui` tree, but most of
+/// its regions are still `Host` leaves painted by the code that always painted
+/// them. This folds the native items and skips the hosts, so a region can move
+/// into the tree on its own without the ones around it having to move first.
+///
+/// When the last region is native this collapses into [`fold`], whose
+/// `HostPainter` is the general form.
+pub fn fold_native(spec: &LayoutSpec, buf: &mut Buffer, palette: &dyn Palette) -> Caret {
+    struct Skip;
+    impl HostPainter for Skip {
+        fn paint_host(&mut self, _: HostRegion, _: Rect, _: &mut Buffer, _: &mut Caret) {}
+    }
+    fold(spec, buf, palette, &mut Skip)
+}
+
 /// Fold a display list into `buf`, returning the caret position for the frame.
 ///
 /// **Caret rule.** A native `fresh-ui` widget that placed a cursor
@@ -401,5 +419,46 @@ mod tests {
         let _ = fold(spec, &mut buf, &plain, &mut host_state);
 
         assert!(host_state.painted > 0);
+    }
+}
+
+#[cfg(test)]
+mod native_tests {
+    use super::*;
+    use crate::view::shell::frame::{frame_tree, Frame};
+    use fresh_ui::{Size, Ui};
+
+    fn plain(_: &ThemeKey) -> Style {
+        Style::default()
+    }
+
+    /// **The property the migration's working state depends on.** While every
+    /// region is a `Host` leaf, folding the native items paints nothing — so
+    /// the shell can own the frame's layout without touching a single cell,
+    /// and each region's existing painter keeps producing exactly what it did.
+    #[test]
+    fn a_frame_of_host_regions_paints_nothing() {
+        let mut ui: Ui<()> = Ui::new();
+        let spec = ui
+            .frame(frame_tree(Frame::default()), Size::new(20, 6))
+            .clone();
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 6));
+        let before = buf.clone();
+        fold_native(&spec, &mut buf, &plain);
+        assert_eq!(buf, before, "host regions must be left to their painters");
+    }
+
+    /// And a native region *is* painted, so a surface starts drawing through
+    /// the fold the moment it stops being a host.
+    #[test]
+    fn a_native_region_is_painted() {
+        use crate::view::shell::status_bar::{status_bar, Segment, Side};
+        let mut ui: Ui<()> = Ui::new();
+        let segs = [Segment::new("mode", "NORMAL", Side::Left)];
+        let spec = ui.frame(status_bar(&segs), Size::new(20, 1)).clone();
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 1));
+        fold_native(&spec, &mut buf, &plain);
+        let row: String = (0..20).map(|x| buf[(x, 0)].symbol().to_string()).collect();
+        assert!(row.starts_with("NORMAL"), "got {row:?}");
     }
 }

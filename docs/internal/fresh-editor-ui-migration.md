@@ -909,11 +909,44 @@ derivation left in `render`, it would have compared the shell against itself.
 `tests/ui_shell_frame_parity.rs` keeps both honest instead, and covers far more
 combinations than a running editor reaches.
 
+#### S1 complete: the seam is live and inert
+
+Three pieces closed it, and they share a shape worth naming — **each is
+load-bearing and changes nothing**:
+
+- **The retained tree persists.** `Editor::shell_ui` holds the `Ui` across
+  frames, so element state, focus and the dirty set survive. It is held in an
+  `Option` and **moved out for the duration of a frame** rather than borrowed
+  from `self`: the display list is borrowed from the `Ui` while the fold calls
+  back into `&mut Editor`, and as a plain field those borrows conflict. That is
+  the same disjointness the sibling arrangement gives; either satisfies the
+  constraint §4.4 records.
+- **Native items paint through the fold.** `fold_native` walks the display list
+  and skips `Host` items, so a region can move into the tree on its own while
+  the ones around it keep their existing painters and their existing
+  rectangles. When the last region is native this collapses into the general
+  `fold`. A test pins the property the working state depends on: a frame of
+  host regions paints *nothing*.
+- **Input reaches the shell first.** `shell_dispatch` offers each translated
+  event to the tree ahead of the legacy walk — stage two of the three-stage
+  arrangement, with the modal-capture band still ahead of it and the existing
+  walk still the floor. No node carries a handler yet, so it declines
+  everything and every event lands where it always did.
+
+The message type landed with it: `UiMsg::{Action, Ui}` (§2.9). Everything a
+user could bind stays an `Action` and goes through `handle_action` unchanged;
+positional facts get a `Ui` variant that is applied and never serialized.
+
+**What this buys:** a surface stops being a `Host` leaf and immediately draws
+through the fold, takes its own input, and keeps its own state — with no
+further plumbing. That is what makes S2 and S3 a sequence of independent swaps
+rather than one flag day.
+
 #### Revised stages
 
 | Stage | What moves | Why here |
 |---|---|---|
-| **S1** | Frame skeleton: every region a `Host` leaf, painted by today's painters. Input fully delegated. | **S1a and S1b landed.** The frame's geometry is the shell's; every region is still painted by its existing painter. Remaining: routing paint itself through the fold, the three-stage dispatch, and threading real `BodyState`. |
+| **S1** | Frame skeleton: every region a `Host` leaf, painted by today's painters. Input fully delegated. | **Landed.** The frame's geometry is the shell's, the retained tree persists across frames, native items paint through the fold, and input is offered to the shell ahead of the legacy walk. Every region is still a `Host` leaf, so nothing has changed on screen — which is the point. Remaining before S3: threading real `BodyState`. |
 | **S2** | The live-derived regions — status bar, search-options row — become native descriptions. | Smallest possible first real swap; both already derive their geometry purely (§2.4). |
 | **S3** | Overlays become real `Layer`s: context menus → dropdowns/menu bar → popups → prompt/palette → modals. | The value stage. Each one deletes guard boxes, a rank entry, and a slice of the capture band. |
 | **S4** | Dock column, file explorer, plugin panels. | Depends on S3's layer semantics; carries the plugin API change. |
