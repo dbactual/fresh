@@ -595,6 +595,14 @@ is therefore split in two, and who-calls-whom matters:
 
 Consequences the plan must own:
 
+- **The `Ui` cannot live on the `Editor`.** The fold reads the display list off
+  the `Ui` while calling back into `&mut Editor`; if the `Ui` were a field of
+  `Editor`, those borrows would conflict and the callback could not take the
+  `with_all_mut` split. `Ui` and `Editor` are siblings, as in the library's
+  tutorial — so `Editor::render(&mut self, frame)` becomes a free function or a
+  method taking the `Ui` as a parameter. Asserted at compile time by
+  `_the_ui_must_not_live_on_the_editor` in `app/shell_host.rs`.
+
 - **Click→byte is an element-level concern.** A `Gesture` wrapping the host
   node maps the event position through the fold-published mappings and
   `click_geometry` in its handler, emitting a `UiMsg`; the render object itself
@@ -605,10 +613,11 @@ Consequences the plan must own:
   cursor mechanism (fold output wins for buffer carets), or geometry is derived
   early via `compute_content_layout` — which caret-anchored popups need anyway
   for same-frame anchoring.
-- **The fold-callback API does not exist yet.** Both existing backends stub
-  `Draw::Host` as a `▒` fill; a per-`HostId` callback over `&mut Editor`, run
-  mid-fold in paint order, is the concrete API the whole seam hangs on and the
-  first thing M0 builds.
+- **The fold-callback API** — a per-`HostId` callback over `&mut Editor`, run
+  mid-fold in paint order — is the concrete API the whole seam hangs on. Both
+  of the library's own backends stub `Draw::Host` as a `▒` fill, so it had to
+  be built here; it now exists in prototype as `view::shell::fold::HostPainter`
+  with `impl HostPainter for Editor` calling `render_content` (§5.0).
 - **A relayout footgun**: `HostSpec::Leaf` compares by factory-`Rc` pointer
   equality, so a `build()` that allocates a fresh leaf closure each frame
   forces relayout of every host leaf every frame. Host factories must be
@@ -758,6 +767,46 @@ Two findings:
    fills in order and starves the last. `render.rs` flags this band on purpose
    ("running the actual split … keeps small-terminal squeeze behavior identical
    by construction").
+
+#### The fold, prototyped
+
+The frame parity above proves the *layout*. The other half — the fold, where
+the backend meets `Draw::Host` — is prototyped in
+`crates/fresh-editor/src/view/shell/fold.rs` (display list → cells, with a
+`HostPainter` callback) and `crates/fresh-editor/src/app/shell_host.rs`
+(`impl HostPainter for Editor`, calling `render_content`). Four things it
+establishes:
+
+- **Paint order is preserved across the seam.** Host regions are painted
+  *inline* as their item is reached, so a chrome item later in the list lands
+  on top — the popup-over-a-buffer case. A fold that collected host items and
+  painted them in a second pass would invert this; the test
+  `chrome_painted_after_a_host_lands_on_top_of_it` pins it.
+- **The borrow works, on one condition.** `paint_body` assembles all ~28 of
+  `render_content`'s parameters — the `WindowBuffers::with_all_mut` disjoint
+  split, the theme read-guard, the config bundle — from `&mut Editor` *inside*
+  the callback, while the display list being folded is borrowed from the `Ui`.
+  That type-checks only because **the `Ui` does not live on the `Editor`**:
+  `ui.spec()` borrows the `Ui`, the callback borrows the editor, and the two
+  must be separate objects. This is the arrangement the library's own tutorial
+  uses (`app` and `ui` side by side in `main`), and it is now a compile-time
+  assertion (`_the_ui_must_not_live_on_the_editor`) rather than a claim.
+- **The caret rule falls out instead of being listed.** `LayoutSpec.cursor` —
+  set by a focused native `TextField` — wins over a caret a host region wrote
+  through the `pending_hardware_cursor` out-parameter. That reproduces today's
+  "an overlay's field takes the caret from the buffer" without the
+  `cursor_suppressed_by_late_overlay` suppression list: if a native field has
+  focus, it set the cursor, so it wins by construction.
+- **`impl HostPainter for Editor` is the thing that shrinks.** Every region
+  still listed in its `match` is one the old painters own; each stage moves one
+  out into a native description, until only `HostRegion::Body` — the buffer and
+  terminal grid — is left. That one never migrates.
+
+What the prototype does *not* yet do: thread the real per-frame state (hover
+targets, LSP-waiting, cursor hiding) instead of defaults, and publish
+`BodyOutput` (`view_line_mappings`, tab layouts) to the geometry bridge.
+Neither touches the borrow, which was the open question; both are mechanical
+work for S1.
 
 Finding 2 is **not a layout bug to fix in `fresh-ui`.** It is a signal that
 *which rows are visible* belongs in `build()` as a function of the available
@@ -976,10 +1025,11 @@ list.
 
 ### 6.2 Open decisions — settle each before the wave it blocks
 
-1. **The fold-callback API** (blocks M0). The concrete shape of "backend meets
-   `Draw::Host`": a per-`HostId` callback over `&mut Editor`, run mid-fold in
-   paint order. Nothing like it exists; both current backends stub `Host`.
-   M0's prototype *is* this API.
+1. ~~**The fold-callback API**~~ — **prototyped** (§5.0). `HostPainter` +
+   `impl HostPainter for Editor`; paint order, clipping, the caret rule and the
+   borrow are covered by tests. What remains is threading real per-frame state
+   and publishing `BodyOutput` to the geometry bridge — mechanical S1 work. The
+   `Ui`-beside-`Editor` constraint it revealed is recorded in §4.4.
 2. **Inline styled text** (blocks M3/M5). Styled spans in
    `TextProps`/`Draw::Lines` as a one-time library change, or one `TextRun`
    node per span editor-side (§4.2 note). Mnemonics, match highlights,
