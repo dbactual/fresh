@@ -1918,15 +1918,26 @@ impl Editor {
                 .expect("active buffer must be present");
             self.active_chrome_mut().apply_theme_runs(&status_bar_runs);
 
-            // Parity oracle: the event-time derivation must reproduce both
-            // the area the frame layout chose and the exact clickable-segment
-            // geometry this paint walk produced.
+            // Two parity oracles, checking different things since the frame
+            // moved onto the shell.
+            //
+            // The first is no longer "derivation versus frame layout" — both
+            // sides resolve through `shell_frame` now. What it still catches is
+            // the *retained* tree disagreeing with a fresh one: `render` lays
+            // out through the `Ui` that persists across frames, while
+            // `status_bar_area_now` builds a throwaway one. Stale retained
+            // state skewing layout is precisely the failure a retained tree
+            // makes possible, and nothing else would notice it.
+            //
+            // The second is the original oracle and still means what it says:
+            // `compute_status_layout` is a genuinely separate walk from the
+            // paint pass. It retires when the status bar itself migrates.
             #[cfg(debug_assertions)]
             {
                 debug_assert_eq!(
                     self.status_bar_area_now(),
                     Some(area),
-                    "status-bar area derivation and frame layout must agree"
+                    "the retained tree and a fresh one must lay the frame out alike"
                 );
                 let now = self
                     .status_bar_layout_now()
