@@ -87,6 +87,11 @@ fn button(b: CtButton) -> MouseButton {
 
 /// Translate a mouse event.
 ///
+/// Every `MouseEventKind` has a counterpart, so this never declines today — the
+/// match is deliberately exhaustive rather than ending in a catch-all, so a new
+/// crossterm variant fails the build instead of being silently dropped. The
+/// `Option` is kept for symmetry with [`key`], which does decline.
+///
 /// Drag is reported as a move: the library routes it by pointer capture, so the
 /// node that took the press keeps receiving motion without the backend having
 /// to distinguish the two. That is the whole drag mechanism, and it is what
@@ -130,7 +135,6 @@ pub fn mouse(m: crossterm::event::MouseEvent) -> Option<Input> {
             axis: Axis::Horizontal,
             mods,
         },
-        _ => return None,
     })
 }
 
