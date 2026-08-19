@@ -802,11 +802,37 @@ establishes:
   out into a native description, until only `HostRegion::Body` — the buffer and
   terminal grid — is left. That one never migrates.
 
+#### Input, the other direction
+
+`view/shell/input.rs` carries events the other way: the crossterm key and mouse
+events `Editor::handle_key_press` and `Editor::handle_mouse` already receive,
+translated into `fresh_ui::Input`.
+
+The rule that makes the hybrid dispatch of S1 work is that translation is
+**lossy in one direction only**. Everything the library understands passes
+through faithfully; everything it does not returns `None` and stays on the
+existing path — key releases and repeats, keys with no counterpart (`Insert`,
+media keys), and horizontal wheel, which the library's `Wheel` has no axis for
+and which is therefore declined rather than reported as vertical scroll. The
+shell takes what it understands and the legacy floor keeps the rest, which is
+exactly the three-stage arrangement §5.0 describes.
+
+Two translations encode decisions rather than mechanics:
+
+- **Drag is reported as a move.** The library routes it by pointer capture, so
+  the node that took the press keeps receiving motion without the backend
+  distinguishing the two. That is the whole drag mechanism, and it is what
+  replaces the `PointerGrab` flag ladder (§2.8).
+- **The physical chord is reported, not the layout reading.**
+  `fresh_input_parser::KeyPress` carries both, and the editor's keymap decides
+  which wins. That decision belongs to the keybinding resolver, which survives
+  at the root fallback (§2.9) — not to a widget.
+
 What the prototype does *not* yet do: thread the real per-frame state (hover
-targets, LSP-waiting, cursor hiding) instead of defaults, and publish
-`BodyOutput` (`view_line_mappings`, tab layouts) to the geometry bridge.
-Neither touches the borrow, which was the open question; both are mechanical
-work for S1.
+targets, LSP-waiting, cursor hiding) instead of defaults, publish `BodyOutput`
+(`view_line_mappings`, tab layouts) to the geometry bridge, and run the
+three-stage dispatch for real. None touches the borrow, which was the open
+question; all are mechanical work for S1.
 
 Finding 2 is **not a layout bug to fix in `fresh-ui`.** It is a signal that
 *which rows are visible* belongs in `build()` as a function of the available
