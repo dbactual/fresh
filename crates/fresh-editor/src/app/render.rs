@@ -168,11 +168,13 @@ impl Editor {
         // wrong. Floating-overlay prompts (Live Grep, issue #1796)
         // are exempt because their suggestions live inside the
         // centred frame, not above the bottom row.
+        // The prompt-row flag is read by `shell_frame`, which owns the frame's
+        // shape; the two below are read directly for painting decisions.
         let BottomRowFlags {
             prompt_is_overlay: _,
             has_suggestions,
             has_file_browser,
-            prompt_row_visible,
+            prompt_row_visible: _,
         } = self.bottom_row_flags();
 
         // The frame's geometry comes from the migration shell: one `fresh-ui`
@@ -183,24 +185,11 @@ impl Editor {
         // the standing proof, and it keeps both derivations honest now that
         // only one of them runs here.
         // See docs/internal/fresh-editor-ui-migration.md (S1).
-        let shell = crate::view::shell::frame::Frame {
-            menu_bar: self.active_window().menu_bar_visible,
-            status_bar: self.active_window().status_bar_visible
-                && !has_suggestions
-                && !has_file_browser,
-            search_options: show_search_options,
-            prompt_line: prompt_row_visible,
-            // Already resolved against the frame width by `compute_dock_split`.
-            dock: dock_area.map(|d| d.width),
-            explorer: self.file_explorer_layout_request(chrome_area.width),
-        };
-        // The shell's tree is retained across frames — element state, focus
-        // and the dirty set live on it — so it is moved out for the duration
-        // of the frame rather than borrowed from `self`. See `Editor::shell_ui`.
-        let mut ui = self
-            .shell_ui
-            .take()
-            .unwrap_or_else(|| fresh_ui::Ui::new().into());
+        let shell = self.shell_frame(size);
+        // The shell's tree is retained across frames — element state, focus and
+        // the dirty set live on it — so it is moved out for the duration of the
+        // frame rather than borrowed from `self`. See `Editor::shell_ui`.
+        let mut ui = self.shell_ui.take().unwrap_or_default();
         let regions = {
             let spec = ui.frame(
                 crate::view::shell::frame::frame_tree(shell),
@@ -2221,50 +2210,51 @@ impl Editor {
         }
     }
 
-    /// The chrome column's five rows THIS instant — the same vertical
-    /// [`Layout`] split `render` runs (menu bar, Min content, status bar,
-    /// search options, prompt line), with every row's constraint computed
-    /// from the same live-state conditions. Running the actual split
-    /// (rather than bottom-up row math) keeps small-terminal squeeze
-    /// behavior identical by construction; the per-row `*_area_now`
-    /// derivations gate on their row's visibility and pick their chunk.
-    fn chrome_rows_now(&self) -> [ratatui::layout::Rect; 5] {
-        let win = self.active_window();
-        // ONE computation of the bottom-row facts (`bottom_row_flags`)
-        // shared with the paint-time split — this fn used to hand-copy
-        // all four conditions.
+    /// The frame's shape THIS instant: which regions are showing, how wide the
+    /// sized ones are.
+    ///
+    /// The single derivation of that from state. `render` builds the frame from
+    /// it, and the per-region `*_area_now` queries below resolve against the
+    /// same description, so paint-time and event-time geometry cannot disagree
+    /// — they are the same computation.
+    ///
+    /// This replaced `chrome_rows_now`, which ran its own copy of the vertical
+    /// `Layout` split at event time. Two implementations of one layout is the
+    /// condition this migration exists to remove.
+    pub(crate) fn shell_frame(
+        &self,
+        size: ratatui::layout::Rect,
+    ) -> crate::view::shell::frame::Frame {
         let BottomRowFlags {
             prompt_is_overlay: _,
             has_suggestions,
             has_file_browser,
             prompt_row_visible,
         } = self.bottom_row_flags();
-        let menu_h: u16 = if win.menu_bar_visible { 1 } else { 0 };
-        let status_h: u16 = if !win.status_bar_visible || has_suggestions || has_file_browser {
-            0
-        } else {
-            1
-        };
-        let prompt_h: u16 = if prompt_row_visible { 1 } else { 0 };
-        let search_h: u16 = if self.active_prompt_has_search_options() {
-            1
-        } else {
-            0
-        };
+        let (dock_area, chrome_area) = self.compute_dock_split(size);
+        let win = self.active_window();
+        crate::view::shell::frame::Frame {
+            menu_bar: win.menu_bar_visible,
+            status_bar: win.status_bar_visible && !has_suggestions && !has_file_browser,
+            search_options: self.active_prompt_has_search_options(),
+            prompt_line: prompt_row_visible,
+            dock: dock_area.map(|d| d.width),
+            explorer: self.file_explorer_layout_request(chrome_area.width),
+        }
+    }
+
+    /// One region's rectangle THIS instant.
+    pub(crate) fn shell_region_now(
+        &self,
+        region: crate::view::shell::frame::HostRegion,
+    ) -> ratatui::layout::Rect {
         let frame = self.active_chrome().last_frame;
         let size = ratatui::layout::Rect::new(0, 0, frame.width, frame.height);
-        let (_, chrome_area) = self.compute_dock_split(size);
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints(vec![
-                Constraint::Length(menu_h),
-                Constraint::Min(0),
-                Constraint::Length(status_h),
-                Constraint::Length(search_h),
-                Constraint::Length(prompt_h),
-            ])
-            .split(chrome_area);
-        [chunks[0], chunks[1], chunks[2], chunks[3], chunks[4]]
+        crate::view::shell::frame::region_rects(self.shell_frame(size), size)
+            .into_iter()
+            .find(|(r, _)| *r == region)
+            .map(|(_, rect)| rect)
+            .unwrap_or_default()
     }
 
     /// The status bar's screen area THIS instant, derived from live state:
@@ -2284,7 +2274,7 @@ impl Editor {
         {
             return None;
         }
-        Some(self.chrome_rows_now()[2])
+        Some(self.shell_region_now(crate::view::shell::frame::HostRegion::StatusBar))
     }
 
     /// The menu bar's screen area THIS instant (row 0 of the chrome
@@ -2294,7 +2284,7 @@ impl Editor {
         if !self.active_window().menu_bar_visible {
             return None;
         }
-        Some(self.chrome_rows_now()[0])
+        Some(self.shell_region_now(crate::view::shell::frame::HostRegion::MenuBar))
     }
 
     /// The menu's layout THIS instant — bar label spans, open dropdown /
