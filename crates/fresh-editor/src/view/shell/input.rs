@@ -8,8 +8,8 @@
 //!
 //! Translation is deliberately *lossy in one direction only*: everything
 //! `fresh-ui` understands is passed through faithfully, and everything it does
-//! not — key release/repeat kinds, unmapped keys, drag-vs-move distinctions the
-//! library derives itself — is dropped here rather than approximated. An event
+//! not — key release/repeat kinds, unmapped keys — is dropped here rather than
+//! approximated. An event
 //! that does not translate returns `None` and stays on the existing path, which
 //! is what makes the hybrid dispatch of stage S1 possible: the shell takes what
 //! it understands, and the legacy floor keeps the rest.
@@ -27,7 +27,7 @@ use crossterm::event::{
     KeyCode as CtKey, KeyEventKind, KeyModifiers, MouseButton as CtButton, MouseEventKind,
 };
 
-use fresh_ui::{Input, KeyCode, KeyPress, Mods, MouseButton, Point};
+use fresh_ui::{Axis, Input, KeyCode, KeyPress, Mods, MouseButton, Point};
 
 /// Modifier flags, one for one.
 pub fn mods(m: KeyModifiers) -> Mods {
@@ -109,16 +109,27 @@ pub fn mouse(m: crossterm::event::MouseEvent) -> Option<Input> {
         MouseEventKind::ScrollDown => Input::Wheel {
             pos,
             delta: 1,
+            axis: Axis::Vertical,
             mods,
         },
         MouseEventKind::ScrollUp => Input::Wheel {
             pos,
             delta: -1,
+            axis: Axis::Vertical,
             mods,
         },
-        // Horizontal wheel: the library has no axis on `Wheel`, so these stay
-        // on the existing path (which routes them through `on_hwheel`) rather
-        // than being reported as vertical scroll.
+        MouseEventKind::ScrollRight => Input::Wheel {
+            pos,
+            delta: 1,
+            axis: Axis::Horizontal,
+            mods,
+        },
+        MouseEventKind::ScrollLeft => Input::Wheel {
+            pos,
+            delta: -1,
+            axis: Axis::Horizontal,
+            mods,
+        },
         _ => return None,
     })
 }
@@ -207,11 +218,35 @@ mod tests {
         }
     }
 
-    /// The library's `Wheel` has no axis, so horizontal scroll is declined
-    /// rather than reported as vertical.
+    /// Horizontal scroll crosses with its axis intact rather than being
+    /// declined or, worse, reported as vertical. The axis exists because this
+    /// adapter needed it — see the `fresh-ui` wheel-axis change.
     #[test]
-    fn horizontal_wheel_declines_rather_than_lying() {
-        assert!(mouse(mouse_at(MouseEventKind::ScrollLeft, 0, 0)).is_none());
-        assert!(mouse(mouse_at(MouseEventKind::ScrollRight, 0, 0)).is_none());
+    fn horizontal_wheel_keeps_its_axis() {
+        let right = mouse(mouse_at(MouseEventKind::ScrollRight, 2, 2)).expect("translates");
+        let left = mouse(mouse_at(MouseEventKind::ScrollLeft, 2, 2)).expect("translates");
+        match (right, left) {
+            (
+                Input::Wheel {
+                    delta: r, axis: ra, ..
+                },
+                Input::Wheel {
+                    delta: l, axis: la, ..
+                },
+            ) => {
+                assert_eq!((r, ra), (1, Axis::Horizontal));
+                assert_eq!((l, la), (-1, Axis::Horizontal));
+            }
+            other => panic!("expected horizontal wheels, got {other:?}"),
+        }
+    }
+
+    /// And vertical scroll still reports the vertical axis.
+    #[test]
+    fn vertical_wheel_reports_the_vertical_axis() {
+        match mouse(mouse_at(MouseEventKind::ScrollDown, 0, 0)).expect("translates") {
+            Input::Wheel { axis, .. } => assert_eq!(axis, Axis::Vertical),
+            other => panic!("expected a wheel, got {other:?}"),
+        }
     }
 }

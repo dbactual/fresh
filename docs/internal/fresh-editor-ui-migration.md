@@ -811,11 +811,25 @@ translated into `fresh_ui::Input`.
 The rule that makes the hybrid dispatch of S1 work is that translation is
 **lossy in one direction only**. Everything the library understands passes
 through faithfully; everything it does not returns `None` and stays on the
-existing path — key releases and repeats, keys with no counterpart (`Insert`,
-media keys), and horizontal wheel, which the library's `Wheel` has no axis for
-and which is therefore declined rather than reported as vertical scroll. The
-shell takes what it understands and the legacy floor keeps the rest, which is
-exactly the three-stage arrangement §5.0 describes.
+existing path. The shell takes what it understands and the legacy floor keeps
+the rest, which is exactly the three-stage arrangement §5.0 describes.
+
+Writing this adapter is also what found the library's one real gap, and it is
+worth recording how that was decided, because the same judgement recurs. Three
+things did not cross the seam. Each was tested against two questions — *is the
+concept backend-neutral* (meaningful for a terminal, the web DOM and a test
+alike), and *does the editor actually need it*:
+
+| Gap | Verdict |
+|---|---|
+| **Horizontal wheel** | **Fixed in the library.** The scroll model was already two-dimensional (`ViewportProps::scroll` is a pair, `ScrollInfo::max` is a `Point`) but `Input::Wheel` had no axis and `scroll_chain` only moved `y` — an axis implied by the geometry everywhere except where it could be driven. The editor genuinely uses it (`ScrollLeft`/`ScrollRight`, a whole `on_hwheel` arm). Closed by the wheel-axis change this migration is stacked on. |
+| **Keys with no counterpart** (`Insert`, media keys) | **Left alone.** Tested empirically rather than assumed: every key token bound by the shipped keymap was diffed against `KeyCode`, and the gap is empty. `KeyCode` is deliberately an abstract vocabulary, not a mirror of crossterm; widening it preemptively invites terminal specifics to leak. Grow it when a real binding needs it. |
+| **Key kinds** (press / repeat / release) | **Left alone, and declining is correct.** Treating a repeat as a press is the right behaviour for every widget in the set — a held arrow should move a list. No widget needs release, and a `kind` field would force every consumer to reason about a case none of them handle. |
+
+The general rule, worth applying to the two library changes §5.4 already
+predicts: fix the library when the gap is an **internal asymmetry** — something
+the model already half-expresses — and leave it alone when the gap is only
+"the backend has a concept the library chose not to have".
 
 Two translations encode decisions rather than mechanics:
 
