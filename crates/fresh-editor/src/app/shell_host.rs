@@ -214,6 +214,10 @@ fn _the_ui_must_not_live_on_the_editor(
 pub struct ShellPalette {
     status: Style,
     base: Style,
+    menu: Style,
+    menu_item: Style,
+    menu_highlighted: Style,
+    menu_border: Style,
 }
 
 impl crate::view::shell::fold::Palette for ShellPalette {
@@ -222,6 +226,13 @@ impl crate::view::shell::fold::Palette for ShellPalette {
             // Grown as regions migrate; an unknown name falls back rather than
             // failing, so a new surface renders plainly before it is themed.
             "status" => self.status,
+            // A context menu's box, its rows, and the highlighted row. The
+            // border takes its own colour, as the old painter's
+            // `border_style` did.
+            "menu" => self.menu,
+            "menu.item" => self.menu_item,
+            "menu.item.highlighted" => self.menu_highlighted,
+            "menu.border" => self.menu_border,
             _ => self.base,
         }
     }
@@ -236,6 +247,18 @@ impl Editor {
                 .fg(theme.status_bar_fg)
                 .bg(theme.status_bar_bg),
             base: Style::default().fg(theme.editor_fg).bg(theme.editor_bg),
+            menu: Style::default()
+                .fg(theme.menu_dropdown_fg)
+                .bg(theme.menu_dropdown_bg),
+            menu_item: Style::default()
+                .fg(theme.menu_dropdown_fg)
+                .bg(theme.menu_dropdown_bg),
+            menu_highlighted: Style::default()
+                .fg(theme.menu_highlight_fg)
+                .bg(theme.menu_highlight_bg),
+            menu_border: Style::default()
+                .fg(theme.menu_border_fg)
+                .bg(theme.menu_dropdown_bg),
         }
     }
 }

@@ -60,7 +60,7 @@ impl From<HostRegion> for HostId {
 /// decisions that today read `size` at the top of `render` — the dock's
 /// bail-out, the explorer's column count — are resolved from state before the
 /// description is built. See [`Frame::resolve_dock`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Frame {
     pub menu_bar: bool,
     pub status_bar: bool,
@@ -70,6 +70,10 @@ pub struct Frame {
     pub dock: Option<u16>,
     /// (columns, on_left)
     pub explorer: Option<(u16, bool)>,
+    /// The open context menu, if any. An overlay is an ordinary child of the
+    /// tree rather than a separately-ranked surface — which is the whole point
+    /// of moving them here.
+    pub menu: Option<super::context_menu::Menu>,
 }
 
 impl Default for Frame {
@@ -81,6 +85,7 @@ impl Default for Frame {
             prompt_line: false,
             dock: None,
             explorer: None,
+            menu: None,
         }
     }
 }
@@ -148,10 +153,14 @@ pub fn frame_tree<M: 'static>(f: Frame) -> Node<M> {
         region(HostRegion::SearchOptions).h(cells(f.search_options)),
         region(HostRegion::PromptLine).h(cells(f.prompt_line)),
     ]);
-    row().children([
+    let frame = row().children([
         region(HostRegion::Dock).w(Sizing::Cells(f.dock.unwrap_or(0))),
         chrome,
-    ])
+    ]);
+    match &f.menu {
+        Some(menu) => frame.child(super::context_menu::context_menu(menu)),
+        None => frame,
+    }
 }
 
 fn region<M: 'static>(r: HostRegion) -> Node<M> {
@@ -229,7 +238,7 @@ pub fn assert_parity(
     if size.height < f.fixed_rows() || size.width == 0 || size.height == 0 {
         return;
     }
-    let got = region_rects(f, size);
+    let got = region_rects(f.clone(), size);
     for (region, want) in expected {
         let Some((_, have)) = got.iter().find(|(r, _)| r == region) else {
             debug_assert!(

@@ -942,13 +942,56 @@ through the fold, takes its own input, and keeps its own state — with no
 further plumbing. That is what makes S2 and S3 a sequence of independent swaps
 rather than one flag day.
 
+#### The wave order was wrong, and the code said so
+
+The plan ordered M1 (status bar) before M2 (context menus) by increasing risk.
+Reading both renderers reverses that:
+
+- `render_status` is ~3,200 lines carrying a right-side **drop heuristic**
+  (shed low-priority elements until they fit alongside a ~40%-capped-at-40 left
+  budget, never dropping the first), a narrow-terminal case under 15 columns,
+  per-element truncation, separator theming, per-element styling that varies
+  with LSP state, and cell-provenance runs. Reproducing it cell-identically is
+  a wave in itself.
+- `render_context_menu` is ~50 lines: clear the area, pad each label, draw a
+  bordered block.
+
+So context menus went first — which is also what the plan wanted for a
+different reason: M2 is its designated go/no-go, the first surface to need a
+layer at all.
+
+**Context menu paint, migrated.** A context menu is now an ordinary `Layer` in
+the frame's tree rather than a separately-ranked surface with its own painter.
+Three things kept it cell-identical:
+
+- **The position is the old one.** The layer anchors at the point
+  `ContextMenu::clamped_position` already computed, rather than letting `fit`
+  place it — so the menu lands on the same cells, and the hit-testing that has
+  *not* migrated keeps agreeing with what is drawn.
+- **The padding is the old one**, reproduced character for character
+  (`" {:<width$}"`) rather than re-derived, because the row is what the cells
+  actually contain.
+- **The border glyphs changed to plain** (`┌┐└┘`). The fold drew rounded
+  corners, which nothing had noticed because no surface had used a border yet;
+  ratatui's default — and every bordered surface in the editor — is plain.
+
+**Paint moved late.** The fold used to run straight after layout, which was
+fine while it painted nothing. An overlay sits *above* the content around it,
+so layout still runs early (the regions need rectangles) and paint now runs
+where the context-menu paint used to be. Paint order is what puts a menu on
+top.
+
+`render_context_menus` and `render_context_menu` are deleted. Input,
+dismissal, the close-guard box and the rank entry are the next step — that is
+where `Modality::Inert` replaces the guard box and the precedence entry goes.
+
 #### Revised stages
 
 | Stage | What moves | Why here |
 |---|---|---|
 | **S1** | Frame skeleton: every region a `Host` leaf, painted by today's painters. Input fully delegated. | **Landed.** The frame's geometry is the shell's, the retained tree persists across frames, native items paint through the fold, and input is offered to the shell ahead of the legacy walk. Every region is still a `Host` leaf, so nothing has changed on screen — which is the point. Remaining before S3: threading real `BodyState`. |
 | **S2** | The live-derived regions — status bar, search-options row — become native descriptions. | Smallest possible first real swap; both already derive their geometry purely (§2.4). |
-| **S3** | Overlays become real `Layer`s: context menus → dropdowns/menu bar → popups → prompt/palette → modals. | The value stage. Each one deletes guard boxes, a rank entry, and a slice of the capture band. |
+| **S3** | Overlays become real `Layer`s: context menus → dropdowns/menu bar → popups → prompt/palette → modals. | The value stage. Each one deletes guard boxes, a rank entry, and a slice of the capture band. **Context menus: paint migrated** (below); input, dismissal and the guard box next. |
 | **S4** | Dock column, file explorer, plugin panels. | Depends on S3's layer semantics; carries the plugin API change. |
 | **S5** | Splits, tabs, scrollbars decompose; the buffer becomes the only `Host` leaf. | Requires the per-leaf `render_content` decision (§6.2); last because it is the only stage that touches the KEEP side. |
 

@@ -192,16 +192,11 @@ impl Editor {
         let mut ui = self.shell_ui.take().unwrap_or_default();
         let regions = {
             let spec = ui.frame(
-                crate::view::shell::frame::frame_tree(shell),
+                crate::view::shell::frame::frame_tree(shell.clone()),
                 fresh_ui::Size::new(size.width, size.height),
             );
             crate::view::shell::frame::regions_of(spec, size)
         };
-        // Paint whatever the tree owns outright. Host regions are skipped here
-        // and painted by their existing painters below, at the rectangles the
-        // same layout just produced — that is what lets regions migrate one at
-        // a time instead of all at once.
-        crate::view::shell::fold::fold_native(ui.spec(), frame.buffer_mut(), &self.shell_palette());
         self.shell_ui = Some(ui);
         let region = |r: crate::view::shell::frame::HostRegion| -> ratatui::layout::Rect {
             regions
@@ -961,8 +956,23 @@ impl Editor {
         // Menu bar, drawn last so its dropdowns sit above all other content.
         self.render_menu_bar(frame, menu_bar_area);
 
-        // Tab / file-explorer / new-tab context menus (TUI cell drawing only).
-        self.render_context_menus(frame);
+        // Everything the shell's tree owns outright, painted here rather than
+        // straight after layout: the tree now carries overlays, and an overlay
+        // sits above the content around it. Layout runs early because the
+        // regions need their rectangles; paint runs late because paint order
+        // is what puts a menu on top. Host regions are skipped — they were
+        // painted above, into the rectangles this same layout produced.
+        //
+        // This replaced `render_context_menus`: a context menu is an ordinary
+        // `Layer` in the tree now, not a separately-ranked surface painted by
+        // its own function.
+        {
+            let palette = self.shell_palette();
+            if let Some(ui) = self.shell_ui.take() {
+                crate::view::shell::fold::fold_native(ui.spec(), frame.buffer_mut(), &palette);
+                self.shell_ui = Some(ui);
+            }
+        }
 
         // Chrome theme-key provenance (status bar, menu, tabs, file explorer,
         // scrollbars) is now recorded during each region's own paint.
@@ -2251,7 +2261,31 @@ impl Editor {
             prompt_line: prompt_row_visible,
             dock: dock_area.map(|d| d.width),
             explorer: self.file_explorer_layout_request(chrome_area.width),
+            menu: self.open_context_menu_for_shell(),
         }
+    }
+
+    /// The open context menu as the shell describes it: where it goes, what is
+    /// in it, which row is highlighted.
+    ///
+    /// The position is the one the existing code already clamped to, so the
+    /// menu paints on exactly the cells it did before and the hit-testing that
+    /// has not migrated yet keeps agreeing with what is drawn.
+    fn open_context_menu_for_shell(&self) -> Option<crate::view::shell::context_menu::Menu> {
+        if self.suppress_chrome_cells {
+            return None;
+        }
+        let (_, core) = self.active_window().open_context_menu()?;
+        let items = self.active_window().context_menu_labels()?;
+        let frame = self.active_chrome().last_frame;
+        let (x, y) = core.clamped_position(frame.width, frame.height);
+        Some(crate::view::shell::context_menu::Menu {
+            x,
+            y,
+            width: core.width,
+            highlighted: core.highlighted,
+            items,
+        })
     }
 
     /// One region's rectangle THIS instant.
@@ -2510,24 +2544,6 @@ impl Editor {
                 "menu event-time layout and paint walk must agree"
             );
         }
-    }
-
-    /// Render the tab, file-explorer, and new-tab context menus. TUI-only
-    /// cell drawing; the web projects these natively from `context_menu_view`.
-    fn render_context_menus(&mut self, frame: &mut Frame) {
-        if self.suppress_chrome_cells {
-            return;
-        }
-        // Only one native context menu is ever open at a time; the shared
-        // core + item labels drive a single generic renderer.
-        let Some((_, core)) = self.active_window().open_context_menu() else {
-            return;
-        };
-        let core = core.clone();
-        let Some(items) = self.active_window().context_menu_labels() else {
-            return;
-        };
-        self.render_context_menu(frame, &core, &items);
     }
 
     /// Drain plugin commands enqueued before this frame's layout pass.
@@ -4402,69 +4418,6 @@ impl Editor {
             // Menu hover is handled by MenuRenderer
             _ => {}
         }
-    }
-
-    /// Render a native context menu (tab / "+" new-tab / file-explorer) from
-    /// its shared geometry core and pre-resolved item labels.
-    ///
-    /// All three menus draw an identical bordered list — a `Clear`ed box, one
-    /// padded row per item, the highlighted row in the highlight colours — so
-    /// this is the single renderer for every one of them. The `ContextMenu`
-    /// core supplies the fixed width and the edge-clamped position, keeping
-    /// the drawn box aligned with the hover/click hit-test that reads the same
-    /// core.
-    fn render_context_menu(
-        &self,
-        frame: &mut Frame,
-        core: &super::types::ContextMenu,
-        items: &[String],
-    ) {
-        use ratatui::style::Style;
-        use ratatui::text::{Line, Span};
-        use ratatui::widgets::{Block, Borders, Clear, Paragraph};
-
-        let menu_width = core.width;
-        let menu_height = core.height();
-        let (menu_x, menu_y) = core.clamped_position(frame.area().width, frame.area().height);
-
-        let area = ratatui::layout::Rect::new(menu_x, menu_y, menu_width, menu_height);
-
-        // Clear the area first so the menu box paints over the content beneath.
-        frame.render_widget(Clear, area);
-
-        let (highlight_fg, highlight_bg, dropdown_fg, dropdown_bg, border_fg) = {
-            let theme = self.theme.read().unwrap();
-            (
-                theme.menu_highlight_fg,
-                theme.menu_highlight_bg,
-                theme.menu_dropdown_fg,
-                theme.menu_dropdown_bg,
-                theme.menu_border_fg,
-            )
-        };
-
-        let mut lines = Vec::new();
-        for (idx, label) in items.iter().enumerate() {
-            let style = if idx == core.highlighted {
-                Style::default().fg(highlight_fg).bg(highlight_bg)
-            } else {
-                Style::default().fg(dropdown_fg).bg(dropdown_bg)
-            };
-
-            // Pad the label to fill the menu width (minus the two border cells).
-            let content_width = (menu_width as usize).saturating_sub(2);
-            let padded_label = format!(" {:<width$}", label, width = content_width - 1);
-
-            lines.push(Line::from(vec![Span::styled(padded_label, style)]));
-        }
-
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(border_fg))
-            .style(Style::default().bg(dropdown_bg));
-
-        let paragraph = Paragraph::new(lines).block(block);
-        frame.render_widget(paragraph, area);
     }
 
     /// Render the tab drag drop zone overlay

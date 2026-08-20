@@ -168,6 +168,9 @@ fn combos() -> Vec<Frame> {
                             prompt_line: prompt,
                             dock,
                             explorer,
+                            // The frame layout is the same with or without an
+                            // overlay: a menu is a layer, out of flow.
+                            menu: None,
                         });
                     }
                 }
@@ -185,7 +188,7 @@ fn sweep(sizes: &[(u16, u16)]) -> Vec<String> {
     let mut bad = Vec::new();
     for raw in combos() {
         for &(w, h) in sizes {
-            let f = raw.resolve_dock(w);
+            let f = raw.clone().resolve_dock(w);
             if h < f.fixed_rows() {
                 continue; // the squeeze band — see the test below
             }
@@ -195,8 +198,8 @@ fn sweep(sizes: &[(u16, u16)]) -> Vec<String> {
                 width: w,
                 height: h,
             };
-            let got = fold(f, size);
-            let want = reference(f, size);
+            let got = fold(f.clone(), size);
+            let want = reference(f.clone(), size);
             if got != want {
                 bad.push(format!(
                     "{w}x{h} {f:?}\n     fresh-ui: {got:?}\n     ratatui : {want:?}"
@@ -255,6 +258,7 @@ fn squeeze_band_starves_a_different_row_than_ratatui() {
         prompt_line: true,
         dock: None,
         explorer: None,
+        menu: None,
     };
     let size = Rect {
         x: 0,
@@ -262,8 +266,8 @@ fn squeeze_band_starves_a_different_row_than_ratatui() {
         width: 50,
         height: 2,
     };
-    let got = fold(f, size);
-    let want = reference(f, size);
+    let got = fold(f.clone(), size);
+    let want = reference(f.clone(), size);
     assert_ne!(
         got, want,
         "the squeeze divergence disappeared - if fresh-ui's flex starvation now \

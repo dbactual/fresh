@@ -13,6 +13,7 @@
 //! itself; this module is the seam that will replace it, built and tested
 //! first so the mechanism is proven before any surface depends on it.
 
+pub mod context_menu;
 pub mod fold;
 pub mod frame;
 pub mod input;

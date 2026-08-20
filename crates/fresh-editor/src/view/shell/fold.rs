@@ -221,10 +221,13 @@ fn border(buf: &mut Buffer, r: Rect, style: Style, clip: Rect) {
         put(buf, l, y, '│', style, clip);
         put(buf, right, y, '│', style, clip);
     }
-    put(buf, l, t, '╭', style, clip);
-    put(buf, right, t, '╮', style, clip);
-    put(buf, l, bottom, '╰', style, clip);
-    put(buf, right, bottom, '╯', style, clip);
+    // Plain corners, matching ratatui's default `BorderType::Plain` — the
+    // glyphs every bordered surface in the editor already draws. A rounded set
+    // would be a visible change on the first surface that migrates.
+    put(buf, l, t, '┌', style, clip);
+    put(buf, right, t, '┐', style, clip);
+    put(buf, l, bottom, '└', style, clip);
+    put(buf, right, bottom, '┘', style, clip);
 }
 
 // ---------------------------------------------------------------------------
