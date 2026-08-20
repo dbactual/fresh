@@ -1122,13 +1122,46 @@ states.
 the menu bar's own row, the dock column, and the file explorer. None of them
 depends on the overlay waves any more — their order is now a scheduling choice.
 
+#### The menu bar row, native — the first background region
+
+The first surface migrated *under* the legacy painters rather than over them,
+and the two-pass fold's first real consumer.
+
+- **`BarLabelStyle`** is the bar's `MenuRowStyle`: one ladder (normal / active /
+  hovered) with three renderings — `style()` for ratatui, `theme_keys()` for the
+  theme inspector, `shell_theme()` for the display list.
+- **The mnemonic is a run, not a sibling.** One underlined character inside a
+  label is text styled *within itself*, which is exactly what `text_runs` was
+  added for; laying the three pieces out side by side would let them wrap and
+  truncate independently. The underline is carried as part of the run's theme
+  name (`menu.bar.item.active.mnemonic`), because an item carries one
+  `ThemeKey` and the library never interprets it.
+- **`MenuRenderer::render` is gone.** It painted; `compute_layout` did the same
+  walk with painting switched off, and a `debug_assert` held them in step.
+  Nothing paints a cell there any more, so there is one walk and nothing to
+  keep in step. `render_menu_bar` becomes `record_menu_theme_runs` — the walk's
+  only remaining side effect is the inspector's provenance.
+
+**A region is named, not announced.** `regions_of` used to scan the display
+list for `Draw::Host` items, which works only while every region *is* a host: a
+native region emits no such item, and neither does a region that paints nothing
+at all (a hidden row, a bar with no labels). Both still have rectangles that
+callers ask for by name. Every region node now carries `region_key(r)` — host
+leaf or native alike — and `regions_of` is a layout query (`Ui::find_by_key` +
+`rect_of`) rather than a paint scan. That is goal 5 applied to the migration's
+own bookkeeping: layout computes rectangles, everything else reads them.
+
+The parity sweep caught this, which is the argument for having built it:
+migrating the bar dropped region 2 from 8586 of its cases, silently, until the
+oracle said so.
+
 #### Revised stages
 
 | Stage | What moves | Why here |
 |---|---|---|
 | **S1** | Frame skeleton: every region a `Host` leaf, painted by today's painters. Input fully delegated. | **Landed.** The frame's geometry is the shell's, the retained tree persists across frames, native items paint through the fold, and input is offered to the shell ahead of the legacy walk. Every region is still a `Host` leaf, so nothing has changed on screen — which is the point. Remaining before S3: threading real `BodyState`. |
 | **S2** | The live-derived regions — status bar, search-options row — become native descriptions. | Smallest possible first real swap; both already derive their geometry purely (§2.4). |
-| **S3** | Overlays become real `Layer`s: context menus → dropdowns/menu bar → popups → prompt/palette → modals. | The value stage. Each one deletes guard boxes, a rank entry, and a slice of the capture band. **Context menus: done** (below) — paint, pointer, dismissal, keyboard and geometry, with only the `blocks_terminal_input` rank entry left behind. **Menu-bar dropdowns: paint migrated**; input and the close guard next. |
+| **S3** | Overlays become real `Layer`s: context menus → dropdowns/menu bar → popups → prompt/palette → modals. | The value stage. Each one deletes guard boxes, a rank entry, and a slice of the capture band. **Context menus: done** (below) — paint, pointer, dismissal, keyboard and geometry, with only the `blocks_terminal_input` rank entry left behind. **Menu bar: paint migrated** — the bar row is a native background region and the dropdown chain is a stack of layers; input and the close guard next. |
 | **S4** | Dock column, file explorer, plugin panels. | Depends on S3's layer semantics; carries the plugin API change. |
 | **S5** | Splits, tabs, scrollbars decompose; the buffer becomes the only `Host` leaf. | Requires the per-leaf `render_content` decision (§6.2); last because it is the only stage that touches the KEEP side. |
 

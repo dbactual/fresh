@@ -199,13 +199,11 @@ impl Editor {
             .shell_ui
             .take()
             .expect("the shell tree is taken and returned within one frame");
-        let regions = {
-            let spec = ui.frame(
-                crate::view::shell::frame::frame_tree(shell.clone()),
-                fresh_ui::Size::new(size.width, size.height),
-            );
-            crate::view::shell::frame::regions_of(spec, size)
-        };
+        ui.frame(
+            crate::view::shell::frame::frame_tree(shell.clone()),
+            fresh_ui::Size::new(size.width, size.height),
+        );
+        let regions = crate::view::shell::frame::regions_of(&ui, size);
         self.shell_ui = Some(ui);
         let region = |r: crate::view::shell::frame::HostRegion| -> ratatui::layout::Rect {
             regions
@@ -989,8 +987,11 @@ impl Editor {
         // dock's later pass would overpaint their left edge. See the bottom of
         // `render` and `render_panels_and_modals`.
 
-        // Menu bar, drawn last so its dropdowns sit above all other content.
-        self.render_menu_bar(frame, menu_bar_area);
+        // The menu no longer paints here — the bar row is a native region and
+        // its dropdowns are layers — but its walk still records theme-key
+        // provenance for the inspector, and refreshes the expanded-submenu
+        // cache the event-time layout rides on.
+        self.record_menu_theme_runs(menu_bar_area);
 
         // The shell's OVERLAY band: its `Layer`s, painted after every legacy
         // painter because paint order is what puts a menu on top. Its
@@ -2316,6 +2317,9 @@ impl Editor {
             prompt_row_visible,
         } = self.bottom_row_flags();
         let (dock_area, chrome_area) = self.compute_dock_split(size);
+        // One walk for the whole menu: the bar's labels and, when one is open,
+        // its dropdown chain. Skipped entirely when the bar is hidden.
+        let menu_layout = self.menu_layout_now();
         let win = self.active_window();
         crate::view::shell::frame::Frame {
             menu_bar: win.menu_bar_visible,
@@ -2325,20 +2329,14 @@ impl Editor {
             dock: dock_area.map(|d| d.width),
             explorer: self.file_explorer_layout_request(chrome_area.width),
             menu: self.open_context_menu_for_shell(),
+            menu_bar_items: menu_layout
+                .as_ref()
+                .map(|l| l.shell_bar.clone())
+                .unwrap_or_default(),
             // From the same walk that decides the dropdowns' geometry, so the
             // description and the rectangles the not-yet-migrated hit-testing
             // uses cannot disagree — they are one computation.
-            // Gated on a menu actually being open: the walk expands every
-            // menu (config + plugin) and lays out the whole chain, which is
-            // pure waste on the frames where nothing is open — the same gate
-            // `chrome::Menu::collect` applies for the same reason.
-            dropdowns: if self.menu_state.active_menu.is_some() {
-                self.menu_layout_now()
-                    .map(|l| l.shell_dropdowns)
-                    .unwrap_or_default()
-            } else {
-                Vec::new()
-            },
+            dropdowns: menu_layout.map(|l| l.shell_dropdowns).unwrap_or_default(),
         }
     }
 
@@ -2380,7 +2378,7 @@ impl Editor {
         let Some(ui) = self.shell_ui.as_ref() else {
             return ratatui::layout::Rect::default();
         };
-        crate::view::shell::frame::regions_of(ui.spec(), size)
+        crate::view::shell::frame::regions_of(ui, size)
             .into_iter()
             .find(|(r, _)| *r == region)
             .map(|(_, rect)| rect)
@@ -2444,16 +2442,15 @@ impl Editor {
         let hover_target = self.active_window().mouse_state.hover_target.clone();
         let all_menus = self.all_menus_expanded();
         let keybindings = self.keybindings.read().unwrap();
-        let theme = self.theme.read().unwrap();
         Some(crate::view::ui::MenuRenderer::compute_layout(
             screen,
             area,
             &all_menus,
             &self.menu_state,
             &keybindings,
-            &theme,
             hover_target.as_ref(),
             self.config.editor.menu_bar_mnemonics,
+            None,
         ))
     }
 
@@ -2591,11 +2588,15 @@ impl Editor {
         }
     }
 
-    /// Render the menu bar into `menu_bar_area`. Drawn late in `render` so
-    /// its dropdowns sit above all other content. Hit-test geometry is NOT
-    /// recorded here — chrome hit-testing, click resolution, and the web
-    /// projection derive it live via [`Self::menu_layout_now`].
-    fn render_menu_bar(&mut self, frame: &mut Frame, menu_bar_area: ratatui::layout::Rect) {
+    /// Record the menu's theme-key provenance for the theme inspector.
+    ///
+    /// This was `render_menu_bar`. Nothing about the menu paints from here any
+    /// more — the bar row is a native region in the shell's background band
+    /// and its dropdowns are `Layer`s in the overlay band — but the walk still
+    /// has one caller-visible side effect: the per-cell theme keys the
+    /// inspector reads. It also refreshes the expanded-submenu cache the
+    /// event-time layout rides on.
+    fn record_menu_theme_runs(&mut self, menu_bar_area: ratatui::layout::Rect) {
         if self.active_window().menu_bar_visible {
             // Pre-expand DynamicSubmenu items once per registry; without this
             // MenuRenderer::render rescans + reparses every theme JSON file
@@ -2609,25 +2610,24 @@ impl Editor {
             );
             let hover_target = self.active_window().mouse_state.hover_target.clone();
             let menu_bar_mnemonics = self.config.editor.menu_bar_mnemonics;
-            let draw_chrome = !self.suppress_chrome_cells;
             // The single content source shared with the web `menu_view()`
             // projection (uses the cache populated just above).
             let all_menus = self.all_menus_expanded();
             let keybindings = self.keybindings.read().unwrap();
+            let frame_rect = self.active_chrome().last_frame;
+            let screen = ratatui::layout::Rect::new(0, 0, frame_rect.width, frame_rect.height);
             let mut menu_runs: Vec<crate::app::types::ThemeRun> = Vec::new();
-            let new_menu_layout = crate::view::ui::MenuRenderer::render(
-                frame,
+            let new_menu_layout = crate::view::ui::MenuRenderer::compute_layout(
+                screen,
                 menu_bar_area,
                 &all_menus,
                 &self.menu_state,
                 &keybindings,
-                &self.theme.read().unwrap(),
                 hover_target.as_ref(),
                 menu_bar_mnemonics,
                 Some(&mut crate::app::types::CellThemeRecorder::new(
                     &mut menu_runs,
                 )),
-                draw_chrome,
             );
             drop(keybindings);
             self.active_chrome_mut().apply_theme_runs(&menu_runs);

@@ -7,9 +7,6 @@ use crate::view::theme::Theme;
 use crate::view::ui::layout::point_in_rect;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
-use ratatui::Frame;
 
 // Re-export context_keys from the shared types module
 pub use crate::types::context_keys;
@@ -37,6 +34,10 @@ pub struct MenuLayout {
     pub dropdown_box: Option<Rect>,
     /// Each expanded submenu level's full bordered box: (depth, area).
     pub submenu_boxes: Vec<(usize, Rect)>,
+    /// The bar row as the migration shell describes it: its labels, cut into
+    /// themed runs. Same provenance as `shell_dropdowns` below — the walk that
+    /// decides each label's rectangle also says what it reads and how it looks.
+    pub shell_bar: crate::view::shell::menu::MenuBar,
     /// The open chain as the migration shell describes it, outermost first.
     ///
     /// Transitional: the same walk that decides the geometry above also says
@@ -44,6 +45,68 @@ pub struct MenuLayout {
     /// this rather than a second derivation. It leaves with the ratatui
     /// dropdown painter, when this walk *is* the description builder.
     pub shell_dropdowns: Vec<crate::view::shell::menu::DropdownLevel>,
+}
+
+/// How one menu-bar label is coloured.
+///
+/// The bar's counterpart to [`MenuRowStyle`], and for the same reason: the
+/// cells, the theme inspector's provenance and the shell's description all
+/// need the same decision, and it should exist once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BarLabelStyle {
+    Normal,
+    /// The menu whose dropdown is open. Bold, as the painter had it.
+    Active,
+    Hovered,
+}
+
+impl BarLabelStyle {
+    pub(crate) fn of(is_active: bool, is_hovered: bool) -> BarLabelStyle {
+        if is_active {
+            BarLabelStyle::Active
+        } else if is_hovered {
+            BarLabelStyle::Hovered
+        } else {
+            BarLabelStyle::Normal
+        }
+    }
+
+    pub(crate) fn style(self, theme: &Theme) -> Style {
+        match self {
+            BarLabelStyle::Normal => Style::default().fg(theme.menu_fg).bg(theme.menu_bg),
+            BarLabelStyle::Active => Style::default()
+                .fg(theme.menu_active_fg)
+                .bg(theme.menu_active_bg)
+                .add_modifier(Modifier::BOLD),
+            BarLabelStyle::Hovered => Style::default()
+                .fg(theme.menu_hover_fg)
+                .bg(theme.menu_hover_bg),
+        }
+    }
+
+    /// The `(fg, bg)` provenance keys. Hover is transient and was never
+    /// recorded; it still is not, so the inspector reports the resting look of
+    /// the label under the pointer.
+    pub(crate) fn theme_keys(self) -> (&'static str, &'static str) {
+        match self {
+            BarLabelStyle::Active => ("ui.menu_active_fg", "ui.menu_active_bg"),
+            BarLabelStyle::Normal | BarLabelStyle::Hovered => ("ui.menu_fg", "ui.menu_bg"),
+        }
+    }
+
+    /// The description's name for this label, and for its mnemonic character —
+    /// which differs only by an underline, and an underline is part of how a
+    /// run looks, so it is part of the name.
+    pub(crate) fn shell_theme(self, mnemonic: bool) -> &'static str {
+        match (self, mnemonic) {
+            (BarLabelStyle::Normal, false) => "menu.bar.item",
+            (BarLabelStyle::Normal, true) => "menu.bar.item.mnemonic",
+            (BarLabelStyle::Active, false) => "menu.bar.item.active",
+            (BarLabelStyle::Active, true) => "menu.bar.item.active.mnemonic",
+            (BarLabelStyle::Hovered, false) => "menu.bar.item.hover",
+            (BarLabelStyle::Hovered, true) => "menu.bar.item.hover.mnemonic",
+        }
+    }
 }
 
 /// How one dropdown row is coloured.
@@ -142,6 +205,7 @@ impl MenuLayout {
             menu_areas: Vec::new(),
             item_areas: Vec::new(),
             submenu_areas: Vec::new(),
+            shell_bar: crate::view::shell::menu::MenuBar::default(),
             shell_dropdowns: Vec::new(),
             bar_area,
             dropdown_box: None,
@@ -600,47 +664,16 @@ impl MenuRenderer {
     /// # Returns
     /// `MenuLayout` containing hit areas for mouse interaction
     #[allow(clippy::too_many_arguments)]
-    pub fn render(
-        frame: &mut Frame,
-        area: Rect,
-        // The already-expanded menu list (config + plugin menus, dynamic
-        // submenus resolved) — produced by `Editor::all_menus_expanded()`, the
-        // single content source shared with the web `menu_view()` projection.
-        all_menus: &[Menu],
-        menu_state: &MenuState,
-        keybindings: &crate::input::keybindings::KeybindingResolver,
-        theme: &Theme,
-        hover_target: Option<&crate::app::HoverTarget>,
-        mnemonics_enabled: bool,
-        rec: Option<&mut CellThemeRecorder>,
-        // When false, compute + record layout but skip emitting cells (the host
-        // renders the menu from the semantic model). See docs/internal/web-ui.md.
-        draw: bool,
-    ) -> MenuLayout {
-        let screen = frame.area();
-        Self::render_impl(
-            Some(frame),
-            screen,
-            area,
-            all_menus,
-            menu_state,
-            keybindings,
-            theme,
-            hover_target,
-            mnemonics_enabled,
-            rec,
-            draw,
-        )
-    }
-
-    /// Compute the menu's layout (bar labels, dropdown boxes, item rows)
-    /// from live state without painting a cell — the SAME label-width /
-    /// dropdown-placement walk the paint pass runs (`render_menu_bar`
-    /// asserts the two agree in debug builds). `screen` is the full
-    /// terminal rect (dropdowns clamp against it); `area` is the bar row.
-    /// This is the per-event geometry source (chrome hit-testing, click
-    /// resolution, the web projection): geometry produced by layout, not
-    /// recorded by paint.
+    /// Walk the menu: the bar's labels and the open dropdown chain, producing
+    /// every rectangle hit-testing needs and the description the shell paints
+    /// from.
+    ///
+    /// It used to be two entry points — `render`, which painted, and
+    /// `compute_layout`, which did the same walk with the painting switched
+    /// off, guarded by a `debug_assert` that they agreed. Nothing here paints
+    /// a cell any more, so there is one walk and nothing to keep in step.
+    /// `screen` is the full terminal rect (dropdowns clamp against it);
+    /// `area` is the bar row.
     #[allow(clippy::too_many_arguments)]
     pub fn compute_layout(
         screen: Rect,
@@ -648,40 +681,32 @@ impl MenuRenderer {
         all_menus: &[Menu],
         menu_state: &MenuState,
         keybindings: &crate::input::keybindings::KeybindingResolver,
-        theme: &Theme,
         hover_target: Option<&crate::app::HoverTarget>,
         mnemonics_enabled: bool,
+        rec: Option<&mut CellThemeRecorder>,
     ) -> MenuLayout {
         Self::render_impl(
-            None,
             screen,
             area,
             all_menus,
             menu_state,
             keybindings,
-            theme,
             hover_target,
             mnemonics_enabled,
-            None,
-            false,
+            rec,
         )
     }
 
     #[allow(clippy::too_many_arguments)]
     fn render_impl(
-        // `None` on the event-time layout path (`compute_layout`), which
-        // never paints; always `Some` when `draw` is true.
-        mut frame: Option<&mut Frame>,
         screen: Rect,
         area: Rect,
         all_menus: &[Menu],
         menu_state: &MenuState,
         keybindings: &crate::input::keybindings::KeybindingResolver,
-        theme: &Theme,
         hover_target: Option<&crate::app::HoverTarget>,
         mnemonics_enabled: bool,
         mut rec: Option<&mut CellThemeRecorder>,
-        draw: bool,
     ) -> MenuLayout {
         let mut layout = MenuLayout::new(area);
         // Seed the menu bar with its base keys; each label overwrites its own
@@ -707,8 +732,8 @@ impl MenuRenderer {
             })
             .collect();
 
-        // Build spans for each menu label and track their areas
-        let mut spans = Vec::new();
+        // Build the bar's description and track each label's area.
+        let mut bar = crate::view::shell::menu::MenuBar::default();
         let mut current_x = area.x;
 
         for (idx, menu) in all_menus.iter().enumerate() {
@@ -720,19 +745,7 @@ impl MenuRenderer {
             let is_active = menu_state.active_menu == Some(idx);
             let is_hovered =
                 matches!(hover_target, Some(crate::app::HoverTarget::MenuBarItem(i)) if *i == idx);
-
-            let base_style = if is_active {
-                Style::default()
-                    .fg(theme.menu_active_fg)
-                    .bg(theme.menu_active_bg)
-                    .add_modifier(Modifier::BOLD)
-            } else if is_hovered {
-                Style::default()
-                    .fg(theme.menu_hover_fg)
-                    .bg(theme.menu_hover_bg)
-            } else {
-                Style::default().fg(theme.menu_fg).bg(theme.menu_bg)
-            };
+            let label_style = BarLabelStyle::of(is_active, is_hovered);
 
             // Calculate label width: " Label " = 1 + label_width + 1
             let label_width = str_width(&menu.label) as u16 + 2;
@@ -742,14 +755,9 @@ impl MenuRenderer {
                 .menu_areas
                 .push((idx, Rect::new(current_x, area.y, label_width, 1)));
 
-            // Record this label's keys (active menu wears menu_active; hover is
-            // transient and not recorded).
+            // Record this label's keys, from the same ladder the cells use.
             if let Some(r) = rec.as_deref_mut() {
-                let (fg, bg) = if is_active {
-                    ("ui.menu_active_fg", "ui.menu_active_bg")
-                } else {
-                    ("ui.menu_fg", "ui.menu_bg")
-                };
+                let (fg, bg) = label_style.theme_keys();
                 r.run(
                     current_x,
                     area.y,
@@ -767,43 +775,40 @@ impl MenuRenderer {
                 None
             };
 
-            // Build the label with underlined mnemonic
-            spans.push(Span::styled(" ", base_style));
-
-            if let Some(mnemonic_char) = mnemonic {
-                // Find the first occurrence of the mnemonic character in the label
-                let mut found = false;
-                for c in menu.label.chars() {
-                    if !found && c.to_ascii_lowercase() == mnemonic_char {
-                        // Underline this character
-                        spans.push(Span::styled(
-                            c.to_string(),
-                            base_style.add_modifier(Modifier::UNDERLINED),
-                        ));
-                        found = true;
-                    } else {
-                        spans.push(Span::styled(c.to_string(), base_style));
+            // `" Label "` plus the separating space, cut at the mnemonic so
+            // that one character can be underlined *inside* the label.
+            let mut runs: Vec<(String, &'static str)> = Vec::new();
+            let plain = label_style.shell_theme(false);
+            let under = label_style.shell_theme(true);
+            runs.push((" ".to_string(), plain));
+            match mnemonic {
+                Some(m) => {
+                    let mut found = false;
+                    for c in menu.label.chars() {
+                        let hit = !found && c.to_ascii_lowercase() == m;
+                        found |= hit;
+                        let theme = if hit { under } else { plain };
+                        match runs.last_mut() {
+                            // Neighbouring characters in the same theme are one
+                            // run: the cut exists for the mnemonic, not per
+                            // character.
+                            Some((t, th)) if *th == theme => t.push(c),
+                            _ => runs.push((c.to_string(), theme)),
+                        }
                     }
                 }
-            } else {
-                // No mnemonic, just render the label normally
-                spans.push(Span::styled(menu.label.clone(), base_style));
+                None => runs.push((menu.label.clone(), plain)),
             }
-
-            spans.push(Span::styled(" ", base_style));
-            spans.push(Span::raw(" "));
+            runs.push((" ".to_string(), plain));
+            // The gap to the next label wears the bar's ground, not this
+            // label's — `Span::raw` did that by carrying no style at all.
+            runs.push((" ".to_string(), "menu.bar"));
+            bar.items.push(crate::view::shell::menu::BarItem { runs });
 
             // Move to next position: label_width + 1 for trailing space
             current_x += label_width + 1;
         }
-
-        if draw {
-            if let Some(frame) = frame.as_deref_mut() {
-                let line = Line::from(spans);
-                let paragraph = Paragraph::new(line).style(Style::default().bg(theme.menu_bg));
-                frame.render_widget(paragraph, area);
-            }
-        }
+        layout.shell_bar = bar;
 
         // Render dropdown if a menu is active
         if let Some(active_idx) = menu_state.active_menu {

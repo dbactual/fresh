@@ -201,6 +201,13 @@ pub struct ShellPalette {
     menu_disabled: Style,
     menu_info: Style,
     menu_separator: Style,
+    bar: Style,
+    bar_item: Style,
+    bar_item_mnemonic: Style,
+    bar_active: Style,
+    bar_active_mnemonic: Style,
+    bar_hover: Style,
+    bar_hover_mnemonic: Style,
 }
 
 impl crate::view::shell::fold::Palette for ShellPalette {
@@ -224,8 +231,31 @@ impl crate::view::shell::fold::Palette for ShellPalette {
             "menu.item.disabled" => self.menu_disabled,
             "menu.item.info" => self.menu_info,
             "menu.separator" => self.menu_separator,
+            // The menu bar row: its ground, its labels, and the one character
+            // of a label that wears the mnemonic underline. An underline is
+            // part of how a run looks, so it is part of the run's name — the
+            // library carries one `ThemeKey` per item and never interprets it.
+            "menu.bar" => self.bar,
+            "menu.bar.item" => self.bar_item,
+            "menu.bar.item.mnemonic" => self.bar_item_mnemonic,
+            "menu.bar.item.active" => self.bar_active,
+            "menu.bar.item.active.mnemonic" => self.bar_active_mnemonic,
+            "menu.bar.item.hover" => self.bar_hover,
+            "menu.bar.item.hover.mnemonic" => self.bar_hover_mnemonic,
             _ => self.base,
         }
+    }
+}
+
+use crate::view::ui::BarLabelStyle;
+
+/// One menu-bar label style, with the mnemonic underline applied on top.
+fn bar_style(theme: &crate::view::theme::Theme, style: BarLabelStyle, mnemonic: bool) -> Style {
+    let base = style.style(theme);
+    if mnemonic {
+        base.add_modifier(ratatui::style::Modifier::UNDERLINED)
+    } else {
+        base
     }
 }
 
@@ -259,6 +289,13 @@ impl Editor {
             menu_disabled: crate::view::ui::MenuRowStyle::Disabled.style(&theme),
             menu_info: crate::view::ui::MenuRowStyle::Info.style(&theme),
             menu_separator: crate::view::ui::MenuRowStyle::Separator.style(&theme),
+            bar: Style::default().bg(theme.menu_bg),
+            bar_item: bar_style(&theme, BarLabelStyle::Normal, false),
+            bar_item_mnemonic: bar_style(&theme, BarLabelStyle::Normal, true),
+            bar_active: bar_style(&theme, BarLabelStyle::Active, false),
+            bar_active_mnemonic: bar_style(&theme, BarLabelStyle::Active, true),
+            bar_hover: bar_style(&theme, BarLabelStyle::Hovered, false),
+            bar_hover_mnemonic: bar_style(&theme, BarLabelStyle::Hovered, true),
         }
     }
 }

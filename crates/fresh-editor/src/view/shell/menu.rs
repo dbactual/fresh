@@ -14,9 +14,55 @@
 //! then let the layer's own `fit` decide placement — and it is what keeps the
 //! not-yet-migrated hit-testing agreeing with what is drawn.
 
-use fresh_ui::{col, layer, text, Anchor, Node, Sizing};
+use fresh_ui::{col, layer, row, text, text_runs, Anchor, Node, Run, Sizing};
 
 use super::msg::UiMsg;
+
+/// One label on the menu bar: `" Label "`, cut into runs so a mnemonic
+/// character can be underlined inside the label rather than beside it.
+///
+/// Cut here rather than in the description because the cut is the renderer's
+/// decision — which character the mnemonic resolver picked — and the shell
+/// only needs to know that a run exists and what to call it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BarItem {
+    /// `(text, theme name)`, in order. Usually one run; three when a mnemonic
+    /// splits the label.
+    pub runs: Vec<(String, &'static str)>,
+}
+
+/// The menu bar row: its labels, and the ground they sit on.
+///
+/// Empty is meaningful — the row still exists and still has a rectangle, which
+/// is what the frame's other regions are measured against.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MenuBar {
+    pub items: Vec<BarItem>,
+}
+
+/// The bar row as a description.
+///
+/// A background surface: it paints in the fold's `Background` band, under
+/// every legacy painter, which is what the two-pass fold made possible. Its
+/// own dropdowns are `Layer`s and paint in the other band, over them.
+pub fn menu_bar(bar: &MenuBar) -> Node<UiMsg> {
+    let labels: Vec<Node<UiMsg>> = bar
+        .items
+        .iter()
+        .map(|it| {
+            let runs: Vec<Run> = it
+                .runs
+                .iter()
+                .map(|(t, theme)| Run::themed(t.clone(), *theme))
+                .collect();
+            text_runs(runs).into()
+        })
+        .collect();
+
+    // The row names its own ground, so the cells between and after the labels
+    // carry the bar's background — the `Paragraph`'s `.style(bg)` did that.
+    row().theme("menu.bar").children(labels)
+}
 
 /// One row of one dropdown: what it says, and the name of how it looks.
 ///
@@ -143,6 +189,100 @@ mod tests {
         assert_eq!(line(&buf, 2), " │ New      │       ", "first row");
         assert_eq!(line(&buf, 3), " │ Open     │       ", "second row");
         assert_eq!(line(&buf, 4), " └──────────┘       ", "bottom border");
+    }
+
+    /// The bar row: `" Label "` per menu with a space between, on the bar's
+    /// own ground — character for character what the `Paragraph` wrote.
+    #[test]
+    fn the_bar_paints_its_labels() {
+        let mut ui: Ui<UiMsg> = Ui::new();
+        let frame = Frame {
+            menu_bar_items: MenuBar {
+                items: vec![
+                    BarItem {
+                        runs: vec![
+                            (" ".into(), "menu.bar.item"),
+                            ("File".into(), "menu.bar.item"),
+                            (" ".into(), "menu.bar.item"),
+                            (" ".into(), "menu.bar"),
+                        ],
+                    },
+                    BarItem {
+                        runs: vec![
+                            (" ".into(), "menu.bar.item"),
+                            ("Edit".into(), "menu.bar.item"),
+                            (" ".into(), "menu.bar.item"),
+                            (" ".into(), "menu.bar"),
+                        ],
+                    },
+                ],
+            },
+            ..Frame::default()
+        };
+        let spec = ui.frame(frame_tree(frame), Size::new(20, 4)).clone();
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 4));
+        fold_native(&spec, &mut buf, &plain, Band::Background);
+        // `" File "` plus the separator space is 7 cells, exactly the stride
+        // the label-area walk advances by.
+        assert_eq!(line(&buf, 0), " File   Edit        ");
+    }
+
+    /// **A style inside a run.** The mnemonic is one underlined character in
+    /// the middle of a label — text styled *within* itself, which is what
+    /// `text_runs` exists for. Laying the three pieces out as siblings would
+    /// let them wrap and truncate independently.
+    #[test]
+    fn a_mnemonic_is_its_own_run_inside_the_label() {
+        let bar = MenuBar {
+            items: vec![BarItem {
+                runs: vec![
+                    (" ".into(), "menu.bar.item"),
+                    ("F".into(), "menu.bar.item.mnemonic"),
+                    ("ile".into(), "menu.bar.item"),
+                    (" ".into(), "menu.bar.item"),
+                    (" ".into(), "menu.bar"),
+                ],
+            }],
+        };
+        let mut ui: Ui<UiMsg> = Ui::new();
+        let spec = ui
+            .frame(
+                frame_tree(Frame {
+                    menu_bar_items: bar,
+                    ..Frame::default()
+                }),
+                Size::new(20, 4),
+            )
+            .clone();
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 4));
+        fold_native(&spec, &mut buf, &plain, Band::Background);
+        assert_eq!(line(&buf, 0), " File               ");
+        // The underline is a theme name, not a glyph: the run carrying it is
+        // its own item, so a backend can style it alone.
+        let items = spec.items_for(&crate::view::shell::frame::region_key(
+            crate::view::shell::frame::HostRegion::MenuBar,
+        ));
+        assert!(
+            items
+                .iter()
+                .any(|i| i.theme.as_str() == "menu.bar.item.mnemonic"),
+            "the mnemonic run must reach the display list under its own name"
+        );
+    }
+
+    /// A migrated region is still a region: everything that asks for the menu
+    /// bar's rectangle by name keeps getting an answer, now that no
+    /// `Draw::Host` announces it.
+    #[test]
+    fn the_bar_still_reports_its_rectangle() {
+        use crate::view::shell::frame::{region_rects, HostRegion};
+        let rects = region_rects(Frame::default(), Rect::new(0, 0, 30, 8));
+        let bar = rects
+            .iter()
+            .find(|(r, _)| *r == HostRegion::MenuBar)
+            .expect("the menu bar still has a rectangle")
+            .1;
+        assert_eq!(bar, Rect::new(0, 0, 30, 1));
     }
 
     /// **Declaration order is paint order.** A submenu opens to the right of

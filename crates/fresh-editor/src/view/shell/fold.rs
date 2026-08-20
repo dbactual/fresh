@@ -394,7 +394,10 @@ mod tests {
             .collect()
     }
 
-    /// Every visible region reaches its painter, with the rect layout computed.
+    /// Every region still painted by its own code reaches its painter, in the
+    /// rect layout computed. The menu bar is absent because it is no longer a
+    /// `Host`: it is a native region now, and its row is drawn from the tree
+    /// rather than handed back to a painter.
     #[test]
     fn each_region_is_painted_into_its_own_rect() {
         let f = Frame {
@@ -407,15 +410,8 @@ mod tests {
 
         let mut got: Vec<_> = rec.calls.iter().map(|(r, _)| *r).collect();
         got.sort();
-        assert_eq!(
-            got,
-            vec![HostRegion::MenuBar, HostRegion::Body, HostRegion::StatusBar]
-                .into_iter()
-                .collect::<std::collections::BTreeSet<_>>()
-                .into_iter()
-                .collect::<Vec<_>>()
-        );
-        assert_eq!(row_text(&buf, 0), "MMMMMMMMMM");
+        assert_eq!(got, vec![HostRegion::Body, HostRegion::StatusBar]);
+        assert_eq!(row_text(&buf, 0), "          ", "the native bar, unthemed");
         assert_eq!(row_text(&buf, 1), "BBBBBBBBBB");
         assert_eq!(row_text(&buf, 2), "BBBBBBBBBB");
         assert_eq!(row_text(&buf, 3), "SSSSSSSSSS");
@@ -613,10 +609,17 @@ mod band_tests {
             10,
         );
         let cut = overlay_start(&spec);
-        for item in &spec.items[..cut] {
-            assert!(
-                matches!(item.draw, Draw::Host(id) if HostRegion::from_host_id(id).is_some()),
-                "a non-region item painted in the background band: {:?}",
+        let overlay_items: std::collections::HashSet<usize> = spec
+            .index
+            .iter()
+            .filter(|(k, _)| crate::view::shell::frame::is_overlay_key(k))
+            .flat_map(|(_, r)| r.clone())
+            .collect();
+        for (i, item) in spec.items.iter().enumerate() {
+            assert_eq!(
+                i >= cut,
+                overlay_items.contains(&i),
+                "item {i} ({:?}) is on the wrong side of the cut",
                 item.draw
             );
         }
