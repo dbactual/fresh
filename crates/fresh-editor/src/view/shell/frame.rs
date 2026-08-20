@@ -127,6 +127,29 @@ impl Frame {
     }
 }
 
+/// The key families the frame's `Layer`s carry.
+///
+/// The fold cuts the display list into a background band and an overlay band
+/// (see `fold::Band`), and this is how it tells them apart: a keyed subtree
+/// whose key names one of these families came from a layer.
+///
+/// **Adding an overlay to [`frame_tree`] means adding its family here.** The
+/// families are matched by name rather than listed as whole keys so an overlay
+/// with several instances — the dropdown chain, one layer per depth — needs
+/// one entry, not one per instance. `overlays_are_recognised` in this module's
+/// tests holds the two lists together.
+pub const OVERLAY_FAMILIES: &[&str] = &["context_menu", "menu_dropdown"];
+
+/// Whether a display-list key came from one of the frame's layers.
+pub fn is_overlay_key(k: &fresh_ui::Key) -> bool {
+    let name = match k {
+        fresh_ui::Key::Str(s) => &**s,
+        fresh_ui::Key::Pair(s, _) => &**s,
+        fresh_ui::Key::Int(_) => return false,
+    };
+    OVERLAY_FAMILIES.contains(&name)
+}
+
 /// The frame description: one `Host` per region.
 ///
 /// **Every** region is present, hidden ones at zero size, mirroring the

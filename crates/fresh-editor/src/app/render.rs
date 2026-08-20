@@ -214,6 +214,33 @@ impl Editor {
                 .map(|(_, rect)| *rect)
                 .unwrap_or_default()
         };
+        // The shell's BACKGROUND band: everything the tree owns that is not a
+        // `Layer`, painted *before* every legacy painter so they land on top
+        // of it — the mirror of the overlay band at the end of this method.
+        //
+        // Two passes because there is one display list and many legacy
+        // painters, and the legacy painters are not in the list: a native
+        // region under them has to be written first, a native overlay over
+        // them has to be written last. One pass could only ever serve one of
+        // those, which is what confined migration to top-most surfaces.
+        if !self.suppress_chrome_cells {
+            let palette = self.shell_palette();
+            let ui = self
+                .shell_ui
+                .take()
+                .expect("the shell tree is taken and returned within one frame");
+            let caret = crate::view::shell::fold::fold_native(
+                ui.spec(),
+                frame.buffer_mut(),
+                &palette,
+                crate::view::shell::fold::Band::Background,
+            );
+            // A background surface cannot own the caret: `LayoutSpec::cursor`
+            // is answered by the overlay band, and no host paints in this one.
+            debug_assert!(caret.is_none(), "the background band placed a caret");
+            self.shell_ui = Some(ui);
+        }
+
         use crate::view::shell::frame::HostRegion;
         let menu_bar_area = region(HostRegion::MenuBar);
         let status_bar_area = region(HostRegion::StatusBar);
@@ -965,12 +992,12 @@ impl Editor {
         // Menu bar, drawn last so its dropdowns sit above all other content.
         self.render_menu_bar(frame, menu_bar_area);
 
-        // Everything the shell's tree owns outright, painted here rather than
-        // straight after layout: the tree now carries overlays, and an overlay
-        // sits above the content around it. Layout runs early because the
-        // regions need their rectangles; paint runs late because paint order
-        // is what puts a menu on top. Host regions are skipped — they were
-        // painted above, into the rectangles this same layout produced.
+        // The shell's OVERLAY band: its `Layer`s, painted after every legacy
+        // painter because paint order is what puts a menu on top. Its
+        // background band was painted at the top of this method, before them,
+        // for the mirror-image reason. Host regions are skipped in both — they
+        // are painted by their own code, into the rectangles this same layout
+        // produced.
         //
         // This replaced `render_context_menus`: a context menu is an ordinary
         // `Layer` in the tree now, not a separately-ranked surface painted by
@@ -988,8 +1015,12 @@ impl Editor {
                 .shell_ui
                 .take()
                 .expect("the shell tree is taken and returned within one frame");
-            let shell_caret =
-                crate::view::shell::fold::fold_native(ui.spec(), frame.buffer_mut(), &palette);
+            let shell_caret = crate::view::shell::fold::fold_native(
+                ui.spec(),
+                frame.buffer_mut(),
+                &palette,
+                crate::view::shell::fold::Band::Overlay,
+            );
             // A native widget that places a cursor (a focused `TextField`)
             // wins over the buffer's, which is the rule §4.4 states and the
             // behaviour `cursor_suppressed_by_late_overlay` encodes by hand.

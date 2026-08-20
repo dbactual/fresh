@@ -82,7 +82,7 @@ fn dropdown(depth: usize, level: &DropdownLevel) -> Node<UiMsg> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::view::shell::fold::fold_native;
+    use crate::view::shell::fold::{fold_native, Band};
     use crate::view::shell::frame::{frame_tree, Frame};
     use crate::view::shell::msg::UiMsg;
     use fresh_ui::{Size, ThemeKey, Ui};
@@ -109,7 +109,11 @@ mod tests {
         };
         let spec = ui.frame(frame_tree(frame), Size::new(w, h)).clone();
         let mut buf = Buffer::empty(Rect::new(0, 0, w, h));
-        fold_native(&spec, &mut buf, &plain);
+        // Both bands: a test that renders the whole frame wants the whole
+        // display list, and the cut only matters where legacy painters go
+        // between them.
+        fold_native(&spec, &mut buf, &plain, Band::Background);
+        fold_native(&spec, &mut buf, &plain, Band::Overlay);
         buf
     }
 

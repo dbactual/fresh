@@ -1088,6 +1088,40 @@ context menus used — cells, then input, then let the layer's own `fit` decide
 placement — and it is what keeps the not-yet-migrated hit-testing agreeing with
 what is drawn.
 
+#### The fold, split into two bands
+
+The single fold was the migration's real ordering constraint, and it was
+stricter than the plan admitted. There is one display list and *many* legacy
+painters, and the legacy painters are not in the list — so one fold pass can
+only sit on one side of them. It sat late, which made every native surface
+paint above everything unmigrated. That is right for overlays and wrong for
+everything else: the file explorer paints *first* among the legacy painters, so
+making it native under one fold would have put the sidebar on top of the body,
+the popups and the modals, silently.
+
+`fold_native` now takes a `Band`. `render` calls it twice — `Background` before
+any legacy painter, `Overlay` after all of them — and the legacy painters run
+in between. Each band lands where its surface belongs, and the
+"migrate top-down through the old paint order" rule retires with it.
+
+The cut is derived, not stored: `fresh-ui` paints the tree and then its layers,
+so every layer item sits in one contiguous tail and the earliest of them is the
+boundary. `frame::OVERLAY_FAMILIES` names the key families the frame's layers
+carry, matched by family name so a chain of dropdowns needs one entry rather
+than one per depth, and `overlays_are_recognised` holds the two lists together
+— an unrecognised layer would paint in the background band and vanish under the
+legacy painters, which is exactly the silent failure worth a test.
+
+A `layers_from` index on `LayoutSpec` would state the boundary outright instead
+of deriving it. It is a candidate for a later base PR; the derivation needs no
+library change and is exact as long as layers paint last, which the library
+states.
+
+**What this unblocks, all at once:** the status bar and the search-options row
+(S2, which had been stuck precisely because popups paint over the bar's row),
+the menu bar's own row, the dock column, and the file explorer. None of them
+depends on the overlay waves any more — their order is now a scheduling choice.
+
 #### Revised stages
 
 | Stage | What moves | Why here |
