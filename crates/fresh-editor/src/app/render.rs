@@ -93,6 +93,15 @@ impl Editor {
             window.enforce_terminal_grid_wrap();
         }
 
+        // The boolean state flags menu `when` conditions read. Refreshed
+        // *before* anything is described, because the menu bar's labels are
+        // now part of the frame's description, built at the top of this
+        // method — the Explorer menu appears only while the sidebar has focus,
+        // and a stale context showed it a frame too long. It used to sit just
+        // above the old late `render_menu_bar` call, which is where the
+        // description was built from.
+        self.update_menu_context();
+
         // Carve a full-height left column for a docked floating panel
         // (e.g. the orchestrator dock) out of the screen *before* the
         // chrome lays itself out, so the menu bar, splits, and status
@@ -974,10 +983,6 @@ impl Editor {
                 draw_global_popup,
             );
         }
-
-        // Render menu bar last so dropdown appears on top of all other content
-        // Update menu context with current editor state
-        self.update_menu_context();
 
         // The full-screen modals (settings, calibration wizard, keybinding
         // editor, event-debug dialog) and the blocking workspace-trust prompt
@@ -2439,7 +2444,10 @@ impl Editor {
         let area = self.menu_bar_area_now()?;
         let frame = self.active_chrome().last_frame;
         let screen = ratatui::layout::Rect::new(0, 0, frame.width, frame.height);
-        let hover_target = self.active_window().mouse_state.hover_target.clone();
+        // The shell's own hover, not the legacy walk's: the menu's chrome
+        // boxes are deleted, so the walk has nothing to say about it and would
+        // only report `None`. See `Editor::shell_hover`.
+        let hover_target = self.shell_hover.clone();
         let all_menus = self.all_menus_expanded();
         let keybindings = self.keybindings.read().unwrap();
         Some(crate::view::ui::MenuRenderer::compute_layout(
@@ -2608,7 +2616,7 @@ impl Editor {
                 &self.menus,
                 &self.menu_state.themes_dir,
             );
-            let hover_target = self.active_window().mouse_state.hover_target.clone();
+            let hover_target = self.shell_hover.clone();
             let menu_bar_mnemonics = self.config.editor.menu_bar_mnemonics;
             // The single content source shared with the web `menu_view()`
             // projection (uses the cache populated just above).

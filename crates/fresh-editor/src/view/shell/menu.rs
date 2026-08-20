@@ -25,22 +25,6 @@ use crate::app::types::HoverTarget;
 
 use super::msg::{UiFact, UiMsg};
 
-/// A `Move` handler that takes the event without saying anything.
-///
-/// A migrated surface owns the pointer over its own cells. Without this the
-/// legacy hover walk runs afterwards, finds no chrome box where the bar and
-/// its dropdowns used to have one, and clears the hover target the tree just
-/// set — the two would fight over the same field every frame.
-fn claim_move() -> (GestureKind, fresh_ui::Handler<UiMsg>) {
-    (
-        GestureKind::Move,
-        Rc::new(|e: &Event| {
-            e.stop();
-            None
-        }),
-    )
-}
-
 fn hover(t: Option<HoverTarget>) -> fresh_ui::Handler<UiMsg> {
     Rc::new(move |_: &Event| Some(UiMsg::Ui(UiFact::MenuHover(t.clone()))))
 }
@@ -90,13 +74,25 @@ pub fn menu_bar(bar: &MenuBar) -> Node<UiMsg> {
                 .collect();
             let (index, active) = (it.index, it.active);
             gesture(text_runs(runs))
-                .on_click(move |_| {
-                    UiMsg::Ui(UiFact::MenuBarClick {
-                        index,
-                        was_active: active,
-                    })
-                })
+                // Stops, because the row behind it closes the menu: a click
+                // bubbles to every handler on its path, so a label that only
+                // *answered* would be followed by the ground's close and the
+                // menu would open and shut in one press.
+                .on(
+                    GestureKind::Click,
+                    Rc::new(move |e: &Event| {
+                        e.stop();
+                        Some(UiMsg::Ui(UiFact::MenuBarClick {
+                            index,
+                            was_active: active,
+                        }))
+                    }),
+                )
                 .on_enter(hover(Some(HoverTarget::MenuBarItem(index))))
+                // The partner of `on_enter`: the tree owns this hover
+                // outright, so nothing else will clear it when the pointer
+                // moves off into the gap between labels.
+                .on_leave(hover(None))
                 .into()
         })
         .collect();
@@ -108,10 +104,8 @@ pub fn menu_bar(bar: &MenuBar) -> Node<UiMsg> {
     // `row == 0` arm of `handle_click_menu_bar` did; a label above answers
     // first, because a click is derived per path and the label is the deeper
     // one.
-    let (mk, mh) = claim_move();
     gesture(row().theme("menu.bar").children(labels))
         .on_click(|_| UiMsg::Ui(UiFact::CloseMenu))
-        .on(mk, mh)
         .on_enter(hover(None))
 }
 
@@ -155,9 +149,20 @@ fn dropdown(depth: usize, level: &DropdownLevel) -> Node<UiMsg> {
         .enumerate()
         .map(|(index, r)| {
             gesture(text(r.text.clone()).theme(r.theme).h(Sizing::Cells(1)))
-                .on_click(move |_| UiMsg::Ui(UiFact::MenuItemClick { depth, index }))
+                // Stops, for the same reason the bar's labels do: the box
+                // behind the rows closes the menu, and a row that only
+                // answered would be followed by that close — which would shut
+                // the menu on the way into a submenu.
+                .on(
+                    GestureKind::Click,
+                    Rc::new(move |e: &Event| {
+                        e.stop();
+                        Some(UiMsg::Ui(UiFact::MenuItemClick { depth, index }))
+                    }),
+                )
                 // The hover machine decides what a row under the pointer
                 // means — highlight, open a submenu, close the deeper ones.
+                .on_leave(hover(None))
                 .on_enter(hover(Some(if depth == 0 {
                     // The bar index the reaction fills in for itself; it knows
                     // which menu is open.
@@ -169,7 +174,6 @@ fn dropdown(depth: usize, level: &DropdownLevel) -> Node<UiMsg> {
         })
         .collect();
 
-    let (mk, mh) = claim_move();
     let mut l = layer()
         .key(fresh_ui::Key::Pair("menu_dropdown".into(), depth as u64))
         // The rectangle the old placement walk chose, not a fresh one: while
@@ -189,8 +193,7 @@ fn dropdown(depth: usize, level: &DropdownLevel) -> Node<UiMsg> {
             )
             // An inert cell of the box — its border — closes the menu, which
             // is what a click inside the dropdown that hit no item always did.
-            .on_click(|_| UiMsg::Ui(UiFact::CloseMenu))
-            .on(mk, mh),
+            .on_click(|_| UiMsg::Ui(UiFact::CloseMenu)),
         );
     if depth == 0 {
         // **The close guard, replaced by a property.** A click anywhere else
@@ -522,17 +525,23 @@ mod input_tests {
             .collect()
     }
 
-    /// A label opens its menu.
+    /// A label opens its menu — and says *only* that.
+    ///
+    /// **The exact list matters.** A click bubbles to every handler on its
+    /// path, and the row behind the labels closes the menu. A label that
+    /// answered without stopping produced `[MenuBarClick, CloseMenu]`: the
+    /// menu opened and shut in one press. Asserting `contains` passed that
+    /// happily; asserting the list is what catches it.
     #[test]
-    fn clicking_a_bar_label_opens_that_menu() {
+    fn clicking_a_bar_label_opens_that_menu_and_says_nothing_else() {
         let mut ui = open_menu(None);
         let got = click(&mut ui, 1, 0);
-        assert!(
-            got.contains(&UiFact::MenuBarClick {
+        assert_eq!(
+            got,
+            vec![UiFact::MenuBarClick {
                 index: 0,
                 was_active: false
-            }),
-            "got {got:?}"
+            }]
         );
     }
 
@@ -545,12 +554,19 @@ mod input_tests {
     fn clicking_the_open_menus_label_closes_it() {
         let mut ui = open_menu(Some(0));
         let got = click(&mut ui, 1, 0);
-        assert!(
-            got.contains(&UiFact::MenuBarClick {
-                index: 0,
-                was_active: true
-            }),
-            "got {got:?}"
+        // The label is outside the dropdown, so dismissal answers first and
+        // the label's own click follows. Both close, and closing twice is
+        // closing once — but `was_active` is what makes the second one a close
+        // rather than a reopen.
+        assert_eq!(
+            got,
+            vec![
+                UiFact::CloseMenu,
+                UiFact::MenuBarClick {
+                    index: 0,
+                    was_active: true
+                }
+            ]
         );
     }
 
@@ -563,13 +579,17 @@ mod input_tests {
     fn clicking_another_label_closes_one_menu_and_opens_the_other() {
         let mut ui = open_menu(Some(0));
         let got = click(&mut ui, 8, 0);
-        assert!(got.contains(&UiFact::CloseMenu), "got {got:?}");
-        assert!(
-            got.contains(&UiFact::MenuBarClick {
-                index: 1,
-                was_active: false
-            }),
-            "got {got:?}"
+        // Dismissal first, then the label: close this, open that. Nothing
+        // after, or the open would be undone.
+        assert_eq!(
+            got,
+            vec![
+                UiFact::CloseMenu,
+                UiFact::MenuBarClick {
+                    index: 1,
+                    was_active: false
+                }
+            ]
         );
     }
 
@@ -593,12 +613,21 @@ mod input_tests {
 
     /// A dropdown row activates itself, named by its level and position rather
     /// than by a cell the hit-test has to turn back into an index.
+    /// A row activates itself and says nothing else. The box behind the rows
+    /// closes the menu, so a row that did not stop would shut the menu on the
+    /// way *into* a submenu.
     #[test]
-    fn clicking_a_dropdown_row_activates_it() {
+    fn clicking_a_dropdown_row_activates_it_and_says_nothing_else() {
         let mut ui = open_menu(Some(0));
-        assert!(click(&mut ui, 3, 2).contains(&UiFact::MenuItemClick { depth: 0, index: 0 }));
+        assert_eq!(
+            click(&mut ui, 3, 2),
+            vec![UiFact::MenuItemClick { depth: 0, index: 0 }]
+        );
         let mut ui = open_menu(Some(0));
-        assert!(click(&mut ui, 3, 3).contains(&UiFact::MenuItemClick { depth: 0, index: 1 }));
+        assert_eq!(
+            click(&mut ui, 3, 3),
+            vec![UiFact::MenuItemClick { depth: 0, index: 1 }]
+        );
     }
 
     /// A click on the box but not on a row — its border — closes the menu,
@@ -636,16 +665,80 @@ mod input_tests {
         );
     }
 
-    /// **A migrated surface owns the pointer over its own cells.** Without the
-    /// claim the legacy hover walk runs next, finds no chrome box where the
-    /// bar used to have one, and clears the hover target the tree just set.
+    /// **A migrated surface reports its hover without swallowing the move.**
+    ///
+    /// Claiming looked right — the surface owns its cells — and cost far more
+    /// than it bought: a `Move` claimed at the top row killed the plugin
+    /// `mouse_move` hook, the terminal-link and LSP hover trackers, and any
+    /// text-selection drag whose pointer crossed row 0 (issue #3006's own test
+    /// drags to row 0). The tree reports; it does not consume.
     #[test]
-    fn a_move_over_the_bar_is_claimed() {
+    fn a_move_over_the_bar_reports_hover_without_claiming() {
+        use crate::app::types::HoverTarget;
         let mut ui = open_menu(None);
         let d = ui.dispatch(Input::Move {
             pos: Point::new(1, 0),
             mods: Mods::NONE,
         });
-        assert!(d.claimed);
+        assert!(!d.claimed, "a hover is not a claim");
+        // The row is entered before the label inside it, so the ground's
+        // "nothing" arrives first and the label's answer overwrites it.
+        assert!(
+            matches!(
+                d.msgs.last(),
+                Some(UiMsg::Ui(UiFact::MenuHover(Some(
+                    HoverTarget::MenuBarItem(0)
+                ))))
+            ),
+            "got {:?}",
+            d.msgs
+        );
+    }
+
+    /// **Moving *within* one label says nothing, and that is the point.**
+    ///
+    /// `Enter` fires once on the way in. A scheme that asked "did the tree
+    /// answer this event?" therefore reported no on every motion after the
+    /// first, and whatever else owned the field cleared the highlight — which
+    /// is why the hover the tree reports has a home of its own rather than a
+    /// flag saying who wrote last.
+    #[test]
+    fn moving_within_a_label_reports_nothing_further() {
+        let mut ui = open_menu(None);
+        let _ = ui.dispatch(Input::Move {
+            pos: Point::new(1, 0),
+            mods: Mods::NONE,
+        });
+        let d = ui.dispatch(Input::Move {
+            pos: Point::new(2, 0),
+            mods: Mods::NONE,
+        });
+        assert!(
+            d.msgs.is_empty(),
+            "same label, nothing changed: {:?}",
+            d.msgs
+        );
+    }
+
+    /// Leaving a label clears it: the tree owns this hover outright, so it
+    /// must say when there is nothing under the pointer too.
+    #[test]
+    fn leaving_a_label_clears_the_hover() {
+        let mut ui = open_menu(None);
+        let _ = ui.dispatch(Input::Move {
+            pos: Point::new(1, 0),
+            mods: Mods::NONE,
+        });
+        let d = ui.dispatch(Input::Move {
+            pos: Point::new(60, 5),
+            mods: Mods::NONE,
+        });
+        assert!(
+            d.msgs
+                .iter()
+                .any(|m| matches!(m, UiMsg::Ui(UiFact::MenuHover(None)))),
+            "got {:?}",
+            d.msgs
+        );
     }
 }

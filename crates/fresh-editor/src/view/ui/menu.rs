@@ -47,6 +47,39 @@ pub struct MenuLayout {
     pub shell_dropdowns: Vec<crate::view::shell::menu::DropdownLevel>,
 }
 
+/// Exactly `width` cells: padded if short, cut if long.
+///
+/// The row *is* what the cells contain, so it has to be that wide. The
+/// ratatui `Paragraph` this replaced truncated silently — which several of the
+/// formulas quietly relied on (a separator and an info label are both built
+/// one cell too wide, and any label longer than the box overflows), and a
+/// display list has no such courtesy: an over-long run paints straight through
+/// the box's right border.
+fn fit(s: String, width: usize) -> String {
+    let w = str_width(&s);
+    if w == width {
+        return s;
+    }
+    if w < width {
+        let mut s = s;
+        s.push_str(&" ".repeat(width - w));
+        return s;
+    }
+    let mut out = String::new();
+    let mut used = 0usize;
+    for c in s.chars() {
+        let cw = str_width(&c.to_string());
+        if used + cw > width {
+            break;
+        }
+        out.push(c);
+        used += cw;
+    }
+    // A cut that landed mid-wide-character leaves a cell to fill.
+    out.push_str(&" ".repeat(width - used));
+    out
+}
+
 /// How one menu-bar label is coloured.
 ///
 /// The bar's counterpart to [`MenuRowStyle`], and for the same reason: the
@@ -1129,6 +1162,18 @@ impl MenuRenderer {
     /// theme inspector needs the style alone. What a row *says* is decided
     /// once, here.
     pub(crate) fn dropdown_item_text(
+        item: &MenuItem,
+        content_width: usize,
+        keybindings: &crate::input::keybindings::KeybindingResolver,
+        context: &MenuContext,
+    ) -> String {
+        fit(
+            Self::dropdown_item_text_raw(item, content_width, keybindings, context),
+            content_width,
+        )
+    }
+
+    fn dropdown_item_text_raw(
         item: &MenuItem,
         content_width: usize,
         keybindings: &crate::input::keybindings::KeybindingResolver,

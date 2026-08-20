@@ -167,7 +167,15 @@ pub fn fold_band(
         Band::Overlay => &spec.items[cut..],
     };
     for item in items {
-        let style = palette.style(&item.theme);
+        // From a reset, not a patch. An item's theme says what its cells look
+        // like *outright* — a display list is not a diff over whatever was
+        // there before. `Cell::set_style` patches, so without the reset an
+        // item painted over legacy cells inherits their modifiers: a dropdown
+        // drawn over the active tab came out bold, because the tab's BOLD
+        // survived a fill that only named a foreground and a background. The
+        // ratatui `Block` this replaced said `Style::reset()` for the same
+        // reason.
+        let style = Style::reset().patch(palette.style(&item.theme));
         let rect = to_rect(item.rect);
         let clip = intersect(to_rect(item.clip), frame);
 
@@ -176,8 +184,9 @@ pub fn fold_band(
             Draw::Border => border(buf, rect, style, clip),
             Draw::Scrim(Scrim::Opaque) => fill(buf, frame, ' ', style, frame),
             // Dimming is a backend decision; the library only says "everything
-            // behind this is receding".
-            Draw::Scrim(Scrim::Dim) => restyle(buf, frame, style, frame),
+            // behind this is receding" — so this one *is* a patch over what is
+            // already there, and takes the palette's style unreset.
+            Draw::Scrim(Scrim::Dim) => restyle(buf, frame, palette.style(&item.theme), frame),
             Draw::Lines(lines) => {
                 for (i, line) in lines.iter().enumerate() {
                     let y = rect.y.saturating_add(i as u16);

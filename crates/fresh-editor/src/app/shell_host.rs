@@ -389,7 +389,7 @@ impl Editor {
                         .map(|m| crate::app::types::HoverTarget::MenuDropdownItem(m, item)),
                     other => other,
                 };
-                self.active_window_mut().mouse_state.hover_target = target.clone();
+                self.shell_hover = target.clone();
                 self.menu_hover_reaction(target.as_ref());
             }
             UiFact::MenuBarClick { index, was_active } => {
