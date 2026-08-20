@@ -975,7 +975,14 @@ impl Editor {
         // This replaced `render_context_menus`: a context menu is an ordinary
         // `Layer` in the tree now, not a separately-ranked surface painted by
         // its own function.
-        {
+        //
+        // Suppression is a *fold* decision, not a tree one. The web bridge
+        // draws chrome natively and wants the cells to carry buffer interiors
+        // only — but it still needs the geometry, and the tree is where
+        // geometry lives now. So the description is built either way and only
+        // the cell-writing half is skipped, which is what "backends are folds
+        // over the display list" buys: two backends, one layout.
+        if !self.suppress_chrome_cells {
             let palette = self.shell_palette();
             let ui = self
                 .shell_ui
@@ -2290,23 +2297,22 @@ impl Editor {
         }
     }
 
-    /// The open context menu as the shell describes it: where it goes, what is
-    /// in it, which row is highlighted.
+    /// The open context menu as the shell describes it: the point it was
+    /// opened at, what is in it, which row is highlighted.
     ///
-    /// The position is the one the existing code already clamped to, so the
-    /// menu paints on exactly the cells it did before and the hit-testing that
-    /// has not migrated yet keeps agreeing with what is drawn.
+    /// The point is raw. Keeping the box on screen is the layer's `Fit::CLAMP`,
+    /// so the placement is decided once, by layout, and read back by everyone
+    /// who needs it ([`Editor::shell_menu_rect`]).
+    ///
+    /// Derived whether or not chrome cells are suppressed: the web bridge does
+    /// not want the menu's *cells*, but it does want its rectangle, and the
+    /// tree is where rectangles come from. The fold is what skips the cells.
     fn open_context_menu_for_shell(&self) -> Option<crate::view::shell::context_menu::Menu> {
-        if self.suppress_chrome_cells {
-            return None;
-        }
         let (_, core) = self.active_window().open_context_menu()?;
         let items = self.active_window().context_menu_labels()?;
-        let frame = self.active_chrome().last_frame;
-        let (x, y) = core.clamped_position(frame.width, frame.height);
         Some(crate::view::shell::context_menu::Menu {
-            x,
-            y,
+            x: core.position.0,
+            y: core.position.1,
             width: core.width,
             highlighted: core.highlighted,
             items,
@@ -2334,6 +2340,17 @@ impl Editor {
             .find(|(r, _)| *r == region)
             .map(|(_, rect)| rect)
             .unwrap_or_default()
+    }
+
+    /// Where the open context menu landed, read off the retained tree.
+    ///
+    /// The partner of [`Self::shell_region_now`] for a surface that is not a
+    /// host region: layout placed the menu (its anchor point, pulled inside
+    /// the frame by `Fit::CLAMP`) and this reads the answer back. The web
+    /// `Scene` draws its own menu and needs the cells it covers; asking here
+    /// is what keeps the two frontends on one rectangle.
+    pub(crate) fn shell_menu_rect(&self) -> Option<fresh_ui::Rect> {
+        crate::view::shell::context_menu::menu_rect(self.shell_ui.as_ref()?.spec())
     }
 
     /// The status bar's screen area THIS instant, derived from live state:

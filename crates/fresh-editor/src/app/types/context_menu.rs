@@ -58,22 +58,6 @@ impl ContextMenu {
         self.item_count as u16 + 2
     }
 
-    /// The anchor position clamped so the whole box stays on screen.
-    pub fn clamped_position(&self, screen_width: u16, screen_height: u16) -> (u16, u16) {
-        let x = if self.position.0 + self.width > screen_width {
-            screen_width.saturating_sub(self.width)
-        } else {
-            self.position.0
-        };
-        let h = self.height();
-        let y = if self.position.1 + h > screen_height {
-            screen_height.saturating_sub(h)
-        } else {
-            self.position.1
-        };
-        (x, y)
-    }
-
     /// Move the highlight down one item, wrapping at the end.
     pub fn next_item(&mut self) {
         if self.item_count == 0 {

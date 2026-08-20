@@ -996,15 +996,57 @@ behaviour that is *declared*.
 
 `app/chrome/context_menu.rs` loses 138 lines: its `collect` is now empty, and
 `on_pointer`, `hover`, `on_hover_change` and `handle_click_context_menus` are
-gone. The keyboard grab and the `layer_rank::CONTEXT_MENU` entry remain — the
-rank entry also declares `blocks_terminal_input`, which the PTY gate reads, so
-retiring it means bridging that to the layer's own modality. That is the next
-step and the first real deletion from the precedence table.
+gone.
 
 **One thing worth recording**, because it decides parity: dismissal is
 evaluated on the **press**, not the release (`hit.rs`'s `Input::Press` arm),
 which is exactly when the close-guard box dismissed too. A first version of the
 test watched only the release and saw nothing.
+
+**Keyboard, migrated.** Arrows, Enter and the modal swallow were a pre-band
+keyboard grab — a whole pipeline stage that ran before every layer rank. They
+are now an `on_key` on a focused child of the layer, and the pre-band grab
+stage is down to one component (the theme inspector's observer).
+
+Escape is the interesting one: it is *not* handled. The layer declares
+`Dismiss::ESCAPE`, and a key that dismisses a layer is answered by that layer.
+The handler must therefore decline it without stopping — stopping claims the
+key inside `propagate_key`, which returns before `dispatch_key` reaches
+dismissal at all, so the menu would swallow Escape and stay open. That is the
+shape of every modal that migrates: *act on what you own, stop what you swallow,
+and let the layer's declared dismissals through untouched.*
+
+`ContextMenu::on_key` and `handle_context_menu_key` are deleted.
+
+**Geometry, unified.** The layer anchored at the point
+`ContextMenu::clamped_position` computed — a bridge, while hit-testing was
+still legacy, that outlived its reason and left the editor with two places that
+decided where a menu goes. The layer now takes the **raw** click point with
+`Fit::CLAMP`, which is the same arithmetic (`x.min(frame - box).max(0)`)
+declared instead of written, and `clamped_position` is deleted.
+
+Its second caller was the web `Scene`, and unpicking that is the part worth
+recording, because every later wave hits it:
+
+- **Suppression is a fold decision, not a tree one.** The web bridge renders
+  with `suppress_chrome_cells` so the cells carry buffer interiors only, and
+  the menu's tree derivation was gated on that flag — which meant the retained
+  spec had no menu on exactly the path that needed its rectangle. The gate
+  moved to the `fold_native` call: the description is built either way, and
+  only the cell-writing half is skipped. That is what "backends are folds over
+  the display list" is worth in practice — two frontends, one layout.
+- **Consumers read the spec.** `context_menu::menu_rect(spec)` returns where
+  the menu actually landed, found through `LayoutSpec::index` by the layer's
+  key, and `Editor::shell_menu_rect` is its caller-side partner (the same shape
+  as `shell_region_now`, for a surface that is not a host region). The `Scene`
+  asks it instead of re-deriving the clamp.
+
+What remains of the old implementation is `layer_rank::CONTEXT_MENU`, and only
+because the PTY gate reads `blocks_terminal_input` off the overlay stack while
+the library derives the same fact from `raw_input()` — which is only meaningful
+once host leaves *declare* that they take raw input. Every region is a
+`PlainHost` today, so deriving it now would report the terminal blocked on
+every frame. It retires with the terminal grid's own host leaf (S5).
 
 #### Revised stages
 
@@ -1012,7 +1054,7 @@ test watched only the release and saw nothing.
 |---|---|---|
 | **S1** | Frame skeleton: every region a `Host` leaf, painted by today's painters. Input fully delegated. | **Landed.** The frame's geometry is the shell's, the retained tree persists across frames, native items paint through the fold, and input is offered to the shell ahead of the legacy walk. Every region is still a `Host` leaf, so nothing has changed on screen — which is the point. Remaining before S3: threading real `BodyState`. |
 | **S2** | The live-derived regions — status bar, search-options row — become native descriptions. | Smallest possible first real swap; both already derive their geometry purely (§2.4). |
-| **S3** | Overlays become real `Layer`s: context menus → dropdowns/menu bar → popups → prompt/palette → modals. | The value stage. Each one deletes guard boxes, a rank entry, and a slice of the capture band. **Context menus: paint migrated** (below); input, dismissal and the guard box next. |
+| **S3** | Overlays become real `Layer`s: context menus → dropdowns/menu bar → popups → prompt/palette → modals. | The value stage. Each one deletes guard boxes, a rank entry, and a slice of the capture band. **Context menus: done** (below) — paint, pointer, dismissal, keyboard and geometry, with only the `blocks_terminal_input` rank entry left behind. Menu bar dropdowns next. |
 | **S4** | Dock column, file explorer, plugin panels. | Depends on S3's layer semantics; carries the plugin API change. |
 | **S5** | Splits, tabs, scrollbars decompose; the buffer becomes the only `Host` leaf. | Requires the per-leaf `render_content` decision (§6.2); last because it is the only stage that touches the KEEP side. |
 

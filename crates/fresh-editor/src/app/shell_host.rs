@@ -270,7 +270,9 @@ impl Editor {
                 crate::view::shell::msg::UiMsg::Action(action) => {
                     // Straight into the pipeline that has always applied
                     // actions; nothing about it changes.
-                    let _ = self.handle_action(action);
+                    if let Err(e) = self.handle_action(action.clone()) {
+                        tracing::warn!("shell action {action:?} failed: {e}");
+                    }
                 }
                 crate::view::shell::msg::UiMsg::Ui(fact) => self.apply_ui_fact(fact),
             }
@@ -309,7 +311,9 @@ impl Editor {
                 if let Some(core) = self.active_window_mut().context_menu_core_mut() {
                     core.highlighted = idx;
                 }
-                let _ = self.activate_highlighted_context_menu(kind);
+                if let Err(e) = self.activate_highlighted_context_menu(kind) {
+                    tracing::warn!("context menu activation failed: {e}");
+                }
             }
         }
     }

@@ -11,25 +11,33 @@
 //! `on_key` on a focused child of the layer. Nothing about the menus is
 //! dispatched by hand any more.
 //!
-//! The layer is still anchored at the position `ContextMenu::clamped_position`
-//! computes rather than letting `fit` place it, so `clamped_position` is a
-//! second geometry authority kept alive by two callers: this tree and the web
-//! `Scene` projection. It becomes `Anchor::Point(raw)` + `Fit::CLAMP` when the
-//! `Scene` reads the menu's rect off the retained spec like every other
-//! geometry consumer.
+//! Geometry is the layer's. The menu anchors at the raw right-click point and
+//! `Fit::CLAMP` pulls it back inside the frame — which is all
+//! `ContextMenu::clamped_position` ever did, and that function is gone. Its
+//! other caller, the web `Scene`, now reads [`menu_rect`] off the retained
+//! spec, so there is one place a menu's rectangle is decided and everyone else
+//! reads it.
 //!
 //! `layer_rank::CONTEXT_MENU` is the last of the old implementation, and it
 //! only survives because the PTY gate reads `blocks_terminal_input` off the
 //! overlay stack — see the note at its site.
 
 use fresh_ui::{
-    col, focusable, gesture, layer, text, Anchor, Dismiss, KeyCode, Modality, Node, Sizing,
+    col, focusable, gesture, layer, text, Anchor, Dismiss, Fit, Key, KeyCode, LayoutSpec, Modality,
+    Node, Rect, Sizing,
 };
 
 use super::msg::{MenuStep, UiFact, UiMsg};
 
+/// The key the menu's layer carries, so a rectangle consumer can find its
+/// items in the display list.
+const MENU_KEY: &str = "context_menu";
+
 /// What one menu needs to draw: where it goes, what is in it, and which row is
 /// highlighted.
+///
+/// `x`/`y` are the **raw** anchor point — where the click was. Keeping the
+/// whole box on screen is the layer's `Fit::CLAMP`, not the caller's.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Menu {
     pub x: u16,
@@ -88,10 +96,13 @@ pub fn context_menu(menu: &Menu) -> Node<UiMsg> {
         .collect();
 
     layer()
-        .key("context_menu")
-        // The point the old code clamped to, not a fresh placement: the menu
-        // must land where hit-testing still expects it.
+        .key(MENU_KEY)
+        // The raw point, and `fit` keeps the box on screen. One rectangle,
+        // decided by layout — `clamped_position` was the same arithmetic
+        // written a second time, and everything that needs the answer reads it
+        // back through `menu_rect`.
         .anchor(Anchor::Point(menu.x, menu.y))
+        .fit(Fit::CLAMP)
         // Everything outside is non-interactive while the menu is up, and no
         // host leaf behind it takes raw input. That second half is what the
         // old layer spelled `blocks_terminal_input: true`; the library derives
@@ -149,6 +160,23 @@ pub fn context_menu(menu: &Menu) -> Node<UiMsg> {
                 }
             }),
         )
+}
+
+/// Where the open menu actually landed, read off the display list.
+///
+/// The one geometry authority for a context menu: layout placed it (anchor
+/// plus `Fit::CLAMP`), and every consumer that is not the fold — the web
+/// `Scene`, today — asks here instead of recomputing the placement.
+pub fn menu_rect(spec: &LayoutSpec) -> Option<Rect> {
+    let items = spec.items_for(&Key::Str(MENU_KEY.into()));
+    if items.is_empty() {
+        return None;
+    }
+    let x = items.iter().map(|i| i.rect.x).min()?;
+    let y = items.iter().map(|i| i.rect.y).min()?;
+    let right = items.iter().map(|i| i.rect.x + i.rect.w as i32).max()?;
+    let bottom = items.iter().map(|i| i.rect.y + i.rect.h as i32).max()?;
+    Some(Rect::new(x, y, (right - x) as u16, (bottom - y) as u16))
 }
 
 #[cfg(test)]
@@ -223,6 +251,89 @@ mod paint_tests {
         assert_eq!(row(&buf, 2), "  │ Copy   │        ", "first item");
         assert_eq!(row(&buf, 3), "  │ Paste  │        ", "second item");
         assert_eq!(row(&buf, 4), "  └────────┘        ", "bottom border");
+    }
+
+    /// **The clamp, as a layer property.** A menu opened near the right/bottom
+    /// edge is pulled back inside the frame — the whole of what
+    /// `ContextMenu::clamped_position` computed, now `Fit::CLAMP` on the layer.
+    /// The old arithmetic was `x.min(frame_w - box_w).max(0)` and the same in
+    /// y over a box `items + 2` tall; these are the cells it produced.
+    #[test]
+    fn a_menu_near_the_edge_is_pulled_inside_the_frame() {
+        // Frame 20x6, box 10 wide and 4 tall (2 items + borders), opened at
+        // (14, 4): the old clamp gave (20-10, 6-4) = (10, 2).
+        let buf = render(
+            Menu {
+                x: 14,
+                y: 4,
+                width: 10,
+                highlighted: 0,
+                items: vec!["Copy".into(), "Paste".into()],
+            },
+            20,
+            6,
+        );
+        assert_eq!(row(&buf, 2), "          ┌────────┐", "top border");
+        assert_eq!(row(&buf, 5), "          └────────┘", "bottom border");
+    }
+
+    /// A box larger than the frame is pinned at the origin rather than pushed
+    /// off the left edge — `saturating_sub` in the old code, `.max(0)` in the
+    /// layer's fit.
+    #[test]
+    fn a_menu_wider_than_the_frame_starts_at_the_origin() {
+        let buf = render(
+            Menu {
+                x: 3,
+                y: 1,
+                width: 30,
+                highlighted: 0,
+                items: vec!["Copy".into()],
+            },
+            10,
+            4,
+        );
+        // y clamps to 1 (frame 4 tall, box 3), x pins to 0.
+        assert_eq!(
+            row(&buf, 1).chars().next(),
+            Some('\u{250c}'),
+            "pinned to column 0"
+        );
+    }
+
+    /// **One rectangle, read back.** `menu_rect` is what a consumer that is
+    /// not the fold — the web `Scene` — asks instead of re-deriving the
+    /// placement, so it must name the cells the fold actually painted.
+    #[test]
+    fn menu_rect_names_the_box_that_was_painted() {
+        let mut ui: Ui<UiMsg> = Ui::new();
+        let spec = ui
+            .frame(
+                frame_tree(Frame {
+                    menu: Some(Menu {
+                        x: 14,
+                        y: 4,
+                        width: 10,
+                        highlighted: 0,
+                        items: vec!["Copy".into(), "Paste".into()],
+                    }),
+                    ..Frame::default()
+                }),
+                Size::new(20, 6),
+            )
+            .clone();
+        assert_eq!(menu_rect(&spec), Some(fresh_ui::Rect::new(10, 2, 10, 4)));
+    }
+
+    /// Nothing open, nothing to report — the `Scene` must not be handed a
+    /// stale rectangle when the menu has closed.
+    #[test]
+    fn menu_rect_is_none_with_no_menu_open() {
+        let mut ui: Ui<UiMsg> = Ui::new();
+        let spec = ui
+            .frame(frame_tree(Frame::default()), Size::new(20, 6))
+            .clone();
+        assert_eq!(menu_rect(&spec), None);
     }
 
     /// An overlay is out of flow: it does not disturb the regions around it.
