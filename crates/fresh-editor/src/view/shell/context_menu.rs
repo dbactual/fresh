@@ -4,24 +4,29 @@
 //! modality and its dismissal together, and if the model holds here the later
 //! surfaces apply the same mechanisms.
 //!
-//! Paint, pointer input and dismissal have all migrated: the rows answer the
-//! pointer, `Modality::Inert` does what the full-frame close-guard box did, and
-//! `OUTSIDE_POINTER` dismissal replaces the outside-click arm.
+//! All four input channels have migrated. Paint comes from the tree, the rows
+//! answer the pointer, `Modality::Exclusive` does what the full-frame
+//! close-guard box did, `OUTSIDE_POINTER` dismissal replaces the outside-click
+//! arm, and the arrow/Enter grab that used to run as a pre-band stage is now an
+//! `on_key` on a focused child of the layer. Nothing about the menus is
+//! dispatched by hand any more.
 //!
 //! The layer is still anchored at the position `ContextMenu::clamped_position`
-//! computes rather than letting `fit` place it. That was a bridge while
-//! hit-testing was still legacy; it no longer is, so `clamped_position` is now
-//! a second geometry authority kept alive by this one call. It should become
-//! `Anchor::Point(raw)` + `Fit::CLAMP` when the keyboard half lands and
-//! `layer_rank::CONTEXT_MENU` is deleted — that is the commit where its last
-//! caller goes away.
+//! computes rather than letting `fit` place it, so `clamped_position` is a
+//! second geometry authority kept alive by two callers: this tree and the web
+//! `Scene` projection. It becomes `Anchor::Point(raw)` + `Fit::CLAMP` when the
+//! `Scene` reads the menu's rect off the retained spec like every other
+//! geometry consumer.
 //!
-//! The keyboard grab and that rank entry are what remain of the old
-//! implementation.
+//! `layer_rank::CONTEXT_MENU` is the last of the old implementation, and it
+//! only survives because the PTY gate reads `blocks_terminal_input` off the
+//! overlay stack — see the note at its site.
 
-use fresh_ui::{col, gesture, layer, text, Anchor, Dismiss, Modality, Node, Sizing};
+use fresh_ui::{
+    col, focusable, gesture, layer, text, Anchor, Dismiss, KeyCode, Modality, Node, Sizing,
+};
 
-use super::msg::{UiFact, UiMsg};
+use super::msg::{MenuStep, UiFact, UiMsg};
 
 /// What one menu needs to draw: where it goes, what is in it, and which row is
 /// highlighted.
@@ -87,32 +92,62 @@ pub fn context_menu(menu: &Menu) -> Node<UiMsg> {
         // The point the old code clamped to, not a fresh placement: the menu
         // must land where hit-testing still expects it.
         .anchor(Anchor::Point(menu.x, menu.y))
-        // Everything outside is non-interactive while the menu is up. This is
-        // the full-frame close-guard box, expressed as a property.
-        .modality(Modality::Inert)
-        // Escape stays with the legacy key handler for now, so only the
-        // pointer half is declared here.
-        .dismiss(Dismiss::OUTSIDE_POINTER)
+        // Everything outside is non-interactive while the menu is up, and no
+        // host leaf behind it takes raw input. That second half is what the
+        // old layer spelled `blocks_terminal_input: true`; the library derives
+        // it from the modality instead of taking it on trust.
+        .modality(Modality::Exclusive)
+        .dismiss(Dismiss::OUTSIDE_POINTER.or(Dismiss::ESCAPE))
         .on_dismiss(|_| UiMsg::Ui(UiFact::CloseContextMenu))
         .child(
-            gesture(
-                col()
-                    .border()
-                    .theme("menu")
-                    .w(Sizing::Cells(menu.width))
-                    .children(rows),
+            focusable(
+                gesture(
+                    col()
+                        .border()
+                        .theme("menu")
+                        .w(Sizing::Cells(menu.width))
+                        .children(rows),
+                )
+                // A right-click inside an open menu is swallowed so the menu stays
+                // put rather than being re-opened or re-targeted. Stopping is the
+                // whole of it — the dispatcher reports the claim, so there is
+                // nothing to say.
+                .on(
+                    fresh_ui::GestureKind::SecondaryClick,
+                    std::rc::Rc::new(|e: &fresh_ui::Event| {
+                        e.stop();
+                        None
+                    }),
+                ),
             )
-            // A right-click inside an open menu is swallowed so the menu stays
-            // put rather than being re-opened or re-targeted. Stopping is the
-            // whole of it — the dispatcher reports the claim, so there is
-            // nothing to say.
-            .on(
-                fresh_ui::GestureKind::SecondaryClick,
-                std::rc::Rc::new(|e: &fresh_ui::Event| {
-                    e.stop();
-                    None
-                }),
-            ),
+            // The menu owns the keyboard while it is up: arrows move the
+            // highlight, Enter activates, and everything else is swallowed. That
+            // last part is why claim had to become something the library reports —
+            // a swallowed key produces no message, and inferring "claimed" from
+            // "said something" would let it through.
+            //
+            // Escape is not here: the layer declares `ESCAPE` dismissal, and a key
+            // that dismisses a layer is answered by that layer.
+            .autofocus()
+            .on_key(move |e: &fresh_ui::Event| {
+                let Some(k) = e.key else { return None };
+                if k.mods != fresh_ui::Mods::NONE {
+                    return None;
+                }
+                // Escape is the one key this handler must *not* stop: stopping
+                // claims it here, and the layer's `ESCAPE` dismissal never runs.
+                if k.code == KeyCode::Esc {
+                    return None;
+                }
+                e.stop();
+                match k.code {
+                    KeyCode::Up => Some(UiMsg::Ui(UiFact::StepContextMenu(MenuStep::Prev))),
+                    KeyCode::Down => Some(UiMsg::Ui(UiFact::StepContextMenu(MenuStep::Next))),
+                    KeyCode::Enter => Some(UiMsg::Ui(UiFact::ActivateContextMenuItem(highlighted))),
+                    // Modal: swallowed, with nothing to say about it.
+                    _ => None,
+                }
+            }),
         )
 }
 
@@ -375,6 +410,46 @@ mod input_tests {
             got.is_empty(),
             "swallowing needs no message now that claim is reported, got {got:?}"
         );
+    }
+
+    fn key(ui: &mut Ui<UiMsg>, code: fresh_ui::KeyCode) -> fresh_ui::Dispatch<UiMsg> {
+        ui.dispatch(Input::Key(fresh_ui::KeyPress::with(code, Mods::NONE)))
+    }
+
+    /// Arrows move the highlight and Enter activates — the handler this
+    /// replaced did both from a pre-band keyboard grab.
+    #[test]
+    fn arrows_step_and_enter_activates() {
+        use crate::view::shell::msg::MenuStep;
+        let mut ui = open(20, 8);
+        assert!(facts(key(&mut ui, fresh_ui::KeyCode::Down).msgs)
+            .contains(&UiFact::StepContextMenu(MenuStep::Next)));
+        assert!(facts(key(&mut ui, fresh_ui::KeyCode::Up).msgs)
+            .contains(&UiFact::StepContextMenu(MenuStep::Prev)));
+        assert!(facts(key(&mut ui, fresh_ui::KeyCode::Enter).msgs)
+            .contains(&UiFact::ActivateContextMenuItem(0)));
+    }
+
+    /// **Why claim had to become something the library reports.** An open menu
+    /// is modal: every other key is swallowed, producing no message at all.
+    /// Inferring "claimed" from "said something" would let those keys straight
+    /// through to the editor beneath.
+    #[test]
+    fn every_other_key_is_swallowed_silently() {
+        let mut ui = open(20, 8);
+        let d = key(&mut ui, fresh_ui::KeyCode::Char('x'));
+        assert!(d.msgs.is_empty(), "nothing to say");
+        assert!(d.claimed, "but the menu still owns the key");
+    }
+
+    /// Escape closes it, declared as layer dismissal rather than handled as a
+    /// key — and a key that dismisses a layer is answered by that layer.
+    #[test]
+    fn escape_dismisses_and_is_claimed() {
+        let mut ui = open(20, 8);
+        let d = key(&mut ui, fresh_ui::KeyCode::Esc);
+        assert!(facts(d.msgs).contains(&UiFact::CloseContextMenu));
+        assert!(d.claimed);
     }
 
     /// **The regression this cost us.** A right-click outside an open menu

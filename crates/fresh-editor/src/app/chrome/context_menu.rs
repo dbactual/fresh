@@ -20,25 +20,24 @@ impl ChromeComponent for ContextMenu {
         // migrated yet.
     }
 
-    /// The open native context menu (tab / "+" new-tab /
-    /// file-explorer / close-split) grabs the keyboard: navigation
-    /// and activation on unmodified keys, everything else swallowed
-    /// (#2587). One handler covers all of them via the shared
-    /// geometry core.
-    fn on_key(
-        &self,
-        ed: &mut Editor,
-        code: crossterm::event::KeyCode,
-        modifiers: crossterm::event::KeyModifiers,
-    ) -> Option<AnyhowResult<()>> {
-        ed.handle_context_menu_key(code, modifiers)
-    }
-
+    /// The last thing this component does.
+    ///
+    /// Paint, pointer and keyboard have all moved to the `Layer` in the
+    /// shell's tree, which declares `Modality::Exclusive` — the same two facts
+    /// this entry states by hand: nothing outside is interactive, and the
+    /// terminal takes no raw input beneath it.
+    ///
+    /// It stays because the PTY gate reads `blocks_terminal_input` off the
+    /// overlay stack, while the library derives the same thing from
+    /// `raw_input()` — which is only meaningful once host leaves *declare*
+    /// that they take raw input. Today every region is a `PlainHost`, whose
+    /// `takes_raw_input` is false, so deriving it now would report that the
+    /// terminal is blocked on every frame. It retires with the terminal grid's
+    /// own host leaf (S5), and `layer_rank::CONTEXT_MENU` goes with it.
     fn layers(&self, ed: &Editor, out: &mut Vec<(u16, crate::app::overlay::Layer)>) {
         use crate::app::overlay::{Layer, LayerKind};
-        // The native context menus are modal chrome: while one is open
-        // it owns the keyboard via the custom dispatcher (`on_key`
-        // above), so no `KeyContext` is exposed. Like any covering
+        // While one is open it owns the keyboard — from the tree now, not
+        // from a pre-band grab here — so no `KeyContext` is exposed. Like any covering
         // overlay it blocks PTY routing. Ranked below `Popup` so the
         // unfocused-popup `take_while` guard is unaffected. One entry
         // covers all four menus — they share the geometry core and are
@@ -60,57 +59,6 @@ impl ChromeComponent for ContextMenu {
 /// Behavior owned by this component (moved from mouse_input.rs —
 /// the handlers its arms dispatch to).
 impl Editor {
-    /// Handle a key event while a native context menu (tab / "+" new-tab /
-    /// file-explorer) is open — the one keyboard handler for all three.
-    ///
-    /// The open menu **grabs the keyboard**: Up/Down move the highlight,
-    /// Enter activates the highlighted item, Esc dismisses, and every other
-    /// key — printable characters, Backspace, modified chords — is swallowed
-    /// so it can't leak into the buffer or the explorer's type-ahead find
-    /// underneath and silently retarget the selection the menu acts on
-    /// (#2587). Navigation/activation act only on *unmodified* keys; a
-    /// modified chord is swallowed like any other non-menu key.
-    ///
-    /// Returns `Some` whenever a menu is open (the key is always consumed),
-    /// `None` when no menu is open so normal dispatch continues.
-    pub(super) fn handle_context_menu_key(
-        &mut self,
-        code: crossterm::event::KeyCode,
-        modifiers: crossterm::event::KeyModifiers,
-    ) -> Option<AnyhowResult<()>> {
-        use crossterm::event::{KeyCode, KeyModifiers};
-
-        let kind = self.active_window().open_context_menu().map(|(k, _)| k)?;
-
-        if modifiers == KeyModifiers::NONE {
-            match code {
-                KeyCode::Up => {
-                    if let Some(core) = self.active_window_mut().context_menu_core_mut() {
-                        core.prev_item();
-                    }
-                    return Some(Ok(()));
-                }
-                KeyCode::Down => {
-                    if let Some(core) = self.active_window_mut().context_menu_core_mut() {
-                        core.next_item();
-                    }
-                    return Some(Ok(()));
-                }
-                KeyCode::Enter => {
-                    return Some(self.activate_highlighted_context_menu(kind));
-                }
-                KeyCode::Esc => {
-                    self.active_window_mut().close_context_menus();
-                    return Some(Ok(()));
-                }
-                _ => {}
-            }
-        }
-
-        // Modal: swallow every other key while a menu is open.
-        Some(Ok(()))
-    }
-
     /// Activate the highlighted item of the open context menu: resolve the
     /// item + its payload from the concrete menu, dismiss the menu, then run
     /// the matching `execute_*` action. Shared by both the keyboard (Enter)

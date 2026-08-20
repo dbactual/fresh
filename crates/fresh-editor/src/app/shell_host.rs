@@ -291,6 +291,15 @@ impl Editor {
                     core.highlighted = idx;
                 }
             }
+            UiFact::StepContextMenu(step) => {
+                use crate::view::shell::msg::MenuStep;
+                if let Some(core) = self.active_window_mut().context_menu_core_mut() {
+                    match step {
+                        MenuStep::Prev => core.prev_item(),
+                        MenuStep::Next => core.next_item(),
+                    }
+                }
+            }
             UiFact::ActivateContextMenuItem(idx) => {
                 // The same two steps the old click handler took: move the
                 // highlight, then activate through the path Enter uses.

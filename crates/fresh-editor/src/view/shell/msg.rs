@@ -37,6 +37,15 @@ pub enum UiFact {
     HighlightContextMenuItem(usize),
     /// Activate a row — the same path a keyboard Enter takes.
     ActivateContextMenuItem(usize),
+    /// Move the highlight one row up or down.
+    StepContextMenu(MenuStep),
+}
+
+/// Which way a menu's highlight moves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MenuStep {
+    Prev,
+    Next,
 }
 
 impl From<Action> for UiMsg {
