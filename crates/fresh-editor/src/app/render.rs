@@ -242,8 +242,10 @@ impl Editor {
                 &palette,
                 crate::view::shell::fold::Band::Background,
             );
-            // A background surface cannot own the caret: `LayoutSpec::cursor`
-            // is answered by the overlay band, and no host paints in this one.
+            // Nothing in this band can report a caret: `fold_native` skips
+            // host regions, and the native cursor is answered by the overlay
+            // pass (see `fold_band`). A caret here would mean one of those two
+            // facts had quietly changed.
             debug_assert!(caret.is_none(), "the background band placed a caret");
             self.shell_ui = Some(ui);
         }
@@ -998,6 +1000,10 @@ impl Editor {
         // cache the event-time layout rides on.
         self.record_menu_theme_runs(menu_bar_area);
 
+        // Where a migrated surface asked for the terminal caret, if any. See
+        // the commit at the end of this method.
+        let mut shell_caret: crate::view::shell::fold::Caret = None;
+
         // The shell's OVERLAY band: its `Layer`s, painted after every legacy
         // painter because paint order is what puts a menu on top. Its
         // background band was painted at the top of this method, before them,
@@ -1021,25 +1027,25 @@ impl Editor {
                 .shell_ui
                 .take()
                 .expect("the shell tree is taken and returned within one frame");
-            let shell_caret = crate::view::shell::fold::fold_native(
+            let fold_caret = crate::view::shell::fold::fold_native(
                 ui.spec(),
                 frame.buffer_mut(),
                 &palette,
                 crate::view::shell::fold::Band::Overlay,
             );
-            // A native widget that places a cursor (a focused `TextField`)
-            // wins over the buffer's, which is the rule §4.4 states and the
-            // behaviour `cursor_suppressed_by_late_overlay` encodes by hand.
+            // A native widget that placed a cursor — a focused `TextField` —
+            // outranks both the buffer's caret and the sidebar's, which is the
+            // rule §4.4 states and the thing
+            // `cursor_suppressed_by_late_overlay` encodes by hand for the
+            // surfaces that have not migrated. It wins by construction: if a
+            // native field has focus, it set the cursor.
+            //
             // No migrated surface places one yet, so this is `None` on every
-            // frame today — but taking it and asserting that is how it stays
-            // true, rather than being silently dropped until the first field
-            // migrates and nobody notices it has no caret.
-            debug_assert!(
-                shell_caret.is_none(),
-                "a migrated surface placed a caret ({shell_caret:?}); wire it \
-                 into the end-of-frame cursor commit before relying on it"
-            );
-            let _ = shell_caret;
+            // frame today. It is carried to the commit below anyway, because
+            // an unwired seam that is only asserted-about is a seam nobody
+            // finds out is missing until the first field migrates without a
+            // caret.
+            shell_caret = fold_caret;
             self.shell_ui = Some(ui);
         }
 
@@ -1077,12 +1083,34 @@ impl Editor {
         // `cursor_obscured_by_overlay` cannot see them. The editor's own
         // caret needs no such check: `hide_cursor` above already suppressed
         // it for every one of those states.
-        let hardware_cursor = pending_hardware_cursor.or_else(|| {
+        let legacy_cursor = pending_hardware_cursor.or_else(|| {
             explorer_hardware_cursor.filter(|_| !self.cursor_suppressed_by_late_overlay())
         });
-        if let Some((cx, cy)) = hardware_cursor {
-            if self.active_window().prompt.is_none() && !self.cursor_obscured_by_overlay(cx, cy) {
-                frame.set_cursor_position((cx, cy));
+        match shell_caret {
+            // A caret a migrated surface placed wins outright, and needs none
+            // of the guards below. Those exist to work out whether something
+            // painted later covered the cell; a native field is *in* the tree,
+            // so if it has focus it is on top by construction. That is the
+            // rule §4.4 states, and the reason
+            // `cursor_suppressed_by_late_overlay` retires with the last
+            // unmigrated overlay rather than growing another entry.
+            //
+            // One caveat while the migration runs: `render_panels_and_modals`
+            // paints *after* this commit, so a legacy full-screen modal could
+            // still cover a native caret. That is the same gap the legacy
+            // carets have — it is what `cursor_suppressed_by_late_overlay`
+            // exists for — and it closes when the modals migrate (M7), not
+            // before. No migrated surface places a caret yet, so nothing is
+            // exposed to it today.
+            Some((cx, cy)) => frame.set_cursor_position((cx, cy)),
+            None => {
+                if let Some((cx, cy)) = legacy_cursor {
+                    if self.active_window().prompt.is_none()
+                        && !self.cursor_obscured_by_overlay(cx, cy)
+                    {
+                        frame.set_cursor_position((cx, cy));
+                    }
+                }
             }
         }
 
@@ -2322,10 +2350,22 @@ impl Editor {
             prompt_row_visible,
         } = self.bottom_row_flags();
         let (dock_area, chrome_area) = self.compute_dock_split(size);
+        let win = self.active_window();
         // One walk for the whole menu: the bar's labels and, when one is open,
         // its dropdown chain. Skipped entirely when the bar is hidden.
-        let menu_layout = self.menu_layout_now();
-        let win = self.active_window();
+        //
+        // The bar's rectangle is derived here rather than read back off the
+        // last frame's tree. This is `build`, and build must not depend on
+        // layout — the rectangle it would read is one frame stale, and asking
+        // for it at all is the loop the library refuses. It needs no layout:
+        // the bar is the chrome column's top row.
+        let menu_layout = win.menu_bar_visible.then(|| ratatui::layout::Rect {
+            x: chrome_area.x,
+            y: chrome_area.y,
+            width: chrome_area.width,
+            height: 1,
+        });
+        let menu_layout = menu_layout.and_then(|bar| self.menu_layout_in(bar));
         crate::view::shell::frame::Frame {
             menu_bar: win.menu_bar_visible,
             status_bar: win.status_bar_visible && !has_suggestions && !has_file_browser,
@@ -2441,7 +2481,24 @@ impl Editor {
     /// paint pass (the same content source the painter and `menu_view`
     /// use). `None` when the menu bar is hidden.
     pub(crate) fn menu_layout_now(&self) -> Option<crate::view::ui::menu::MenuLayout> {
-        let area = self.menu_bar_area_now()?;
+        self.menu_layout_in(self.menu_bar_area_now()?)
+    }
+
+    /// The same walk, for a bar rect the caller already has.
+    ///
+    /// `shell_frame` needs it: it *builds* the frame's description, so it runs
+    /// before the frame is laid out and must not read the rectangles the last
+    /// one produced. Build is a function of state, and a build that consulted
+    /// layout would depend on the layout that depends on it — the loop the
+    /// library's own `Ui::rect` refuses at runtime.
+    ///
+    /// The bar's rectangle is not a layout result there anyway: it is the top
+    /// row of the chrome column, whose origin and width `compute_dock_split`
+    /// already decided from state alone.
+    pub(crate) fn menu_layout_in(
+        &self,
+        area: ratatui::layout::Rect,
+    ) -> Option<crate::view::ui::menu::MenuLayout> {
         let frame = self.active_chrome().last_frame;
         let screen = ratatui::layout::Rect::new(0, 0, frame.width, frame.height);
         // The shell's own hover, not the legacy walk's: the menu's chrome

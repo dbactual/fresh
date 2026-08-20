@@ -989,7 +989,7 @@ behaviour that is *declared*.
 
 | Was | Is |
 |---|---|
-| a full-frame `chrome:context_menu_close_guard` box, pushed at z180, with a pointer arm that dismissed and consumed | `Modality::Inert` on the layer — everything outside is non-interactive because the layer says so |
+| a full-frame `chrome:context_menu_close_guard` box, pushed at z180, with a pointer arm that dismissed and consumed | `Modality::Exclusive` on the layer — everything outside is non-interactive because the layer says so, and no host leaf beneath it takes raw input |
 | a `chrome:context_menu` box plus `handle_click_context_menus`, hit-testing the pointer against the menu's rect to decide activate / dismiss / inert-border | the rows' own `on_click`, and `Dismiss::OUTSIDE_POINTER` for everything else |
 | `hover` + `on_hover_change`, walking hover targets to produce `HoverTarget::ContextMenuItem` and feed the highlight back | the rows' own `on_enter` |
 | a "right-click inside an open menu" arm, so the menu is not re-opened or re-targeted | `on_secondary_click` that stops propagation |
@@ -1195,12 +1195,30 @@ platform does. An exclusive layer makes the bar underneath inert and costs the
 user a click. With `None` the dismissal fires first and the label's own click
 follows, so the pair reads "close this, open that".
 
-**Which makes the toggle a build-time fact.** Clicking the *open* menu's own
-label closes it. By the time the click lands, dismissal has already closed the
-menu, so asking "is this menu open?" answers no and reopens it — a toggle that
-never toggles. `MenuBarClick` therefore carries `was_active`, decided when the
-tree was built. This is the general shape: a handler that needs to know what
-was true *before* the event must close over it, because dismissal runs first.
+**Which makes the toggle a matter of *when*, not of what to remember.**
+Clicking the *open* menu's own label closes it. Dismissal runs first, so by the
+time any message is applied the menu is already shut and asking "is this menu
+open?" answers no and reopens it — a toggle that never toggles.
+
+The first fix had the label close over its own open-ness at build time, and it
+was wrong in the running editor while passing every test: the main loop
+repaints between press and release, so the release ran against a tree rebuilt
+with nothing open. `mouse_click` in the harness sends both halves back to back
+and could not express the gap; `mouse_click_with_repaint` now can, and
+`test_mouse_click_toggles_menu_across_a_repaint` is the test that fails without
+the fix.
+
+The fix is to put the toggle where the state is. The bar acts on the **press**,
+which is also what the pre-migration code did (`MouseEventKind::Down`), so the
+dismissal and the toggle land in one dispatch — and `shell_dispatch` snapshots
+`menu_state.active_menu` before applying a single message of it. The general
+shape is the opposite of what the first attempt suggested: *a handler that needs
+to know what was true before the event should not carry the answer; it should
+be dispatched where the answer is still there to read.*
+
+It also produces the right gesture split for free. The bar acts on press and
+the rows act on release, which is precisely press-on-bar, drag-to-item,
+release-to-activate — how a menu bar is used.
 
 **A migrated surface claims the pointer over its own cells.** The hover target
 lives in one field (`mouse_state.hover_target`) that the legacy walk rewrites
@@ -1218,6 +1236,44 @@ be swallowed by the guard box, which consumed any button. Dismissal fires for
 any button but claims only the primary one, so a right-click now closes the
 menu *and* goes on to open the context menu — the same ruling the context-menu
 wave made, for the same reason.
+
+#### Four corrections from the second review
+
+An unbiased agent reviewed the branch against the library's stated goals
+(`docs/internal/fresh-ui-migration-review-2.md`). Its verdict was that the
+frame swap and the context-menu wave are on-goal and the menu-bar wave was
+not. Four things came out of it, beyond the band cut above.
+
+**The caret is wired, not asserted about.** `fold_native`'s return value was
+taken, `debug_assert`ed `None`, and dropped with `let _ =` — a seam that would
+be discovered missing by the first native field having no cursor. It now flows
+into the end-of-frame commit, ahead of both the buffer's caret and the
+sidebar's, and it needs none of the obscured/suppressed guards those two carry:
+a native field is *in* the tree, so if it has focus it is on top by
+construction. `cursor_suppressed_by_late_overlay` retires with the last
+unmigrated overlay rather than growing another entry.
+
+**`build` no longer reads layout.** `shell_frame` reached `menu_layout_now` →
+`shell_region_now` → the retained tree, so building the description consulted
+the rectangles the *previous* frame produced — the loop the library's own
+`Ui::rect` refuses at runtime, and one frame stale into the bargain. The bar's
+rectangle was never a layout result anyway: it is the chrome column's top row,
+and `compute_dock_split` already decided that column from state alone.
+`menu_layout_in(bar_rect)` takes it as an argument now.
+
+**The tests could not see a style.** Every shell test rendered through a
+palette answering `Style::default()`, so a highlighted row, a bold label and an
+underlined mnemonic all came out identical — which is how four cell-level bugs
+reached CI in one wave. `fold::test_palette` gives each theme name a distinct
+colour and reproduces the two modifiers the real palette applies, and the
+migrated surfaces now assert cell styles: the mnemonic run differs from the
+characters beside it, the highlighted context-menu row differs from its
+neighbours, and a dropdown painted over bold cells comes out unbold — the
+display-list-is-not-a-diff rule, pinned at the cell.
+
+**And the exact message list, not `contains`.** The click-bubbling bug produced
+`[MenuBarPress, CloseMenu]` — open and shut in one gesture — and passed a
+`contains` assertion happily. The input tests assert the whole list now.
 
 #### Revised stages
 
@@ -1276,7 +1332,7 @@ plus the §4.7 rebuild benchmark. No wave is scheduled until this exit holds.
 | Wave | Surface | New mechanism exercised | Deletes (survey-grounded) |
 |---|---|---|---|
 | **M1** | Status bar, search-options row | static layout, click targets | the live-derived `status_bar_layout_now`/`search_options_layout_now` paths and their `StatusView` painters |
-| **M2** ⟵ **go/no-go** | Context menus (tab / new-tab / explorer / close-split) | `Layer`, `Modality::Inert`, `dismiss`, list nav | `chrome/context_menu.rs`, its close-guard box, its `on_key` pre-band grab, its rank entry, the four `Window` context-menu highlight fields |
+| **M2** ⟵ **go/no-go** | Context menus (tab / new-tab / explorer / close-split) | `Layer`, `Modality::Exclusive`, `dismiss`, list nav | `chrome/context_menu.rs`, its close-guard box, its `on_key` pre-band grab, its rank entry, the four `Window` context-menu highlight fields |
 | **M3** | Menu bar, dropdowns, submenus | nested layers, hover auto-switch, mnemonics | `chrome/menu.rs`, the `view/ui/menu.rs` dispatch half, the menu close-guard box, the hover auto-switch machine |
 | **M4** | Info/hover/signature popups, theme inspector | transient dismissal via observers, scroll, text selection | `chrome/popups.rs`, `chrome/theme_info.rs`, `view/popup_mouse.rs` remnants, the transient-dismiss pre-band stage (the LSP hover *state machine* stays behind the leaf) |
 | **M5** | File browser, prompt / command palette | `FocusScope`, text input, results list, preview | `chrome/prompt.rs`, `chrome/file_browser.rs`, `view/prompt_input.rs`, the overlay toolbar ring, the click scrim, the position-blind wheel box, the manual-scroll latch |

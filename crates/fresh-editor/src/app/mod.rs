@@ -1146,6 +1146,11 @@ pub struct Editor {
     /// hide. The TUI/GUI leave it `false` and draw chrome to cells as before.
     /// See docs/internal/web-ui.md.
     pub(crate) suppress_chrome_cells: bool,
+    /// Which menu was open when the pointer event now being dispatched
+    /// arrived — before any of its messages were applied, and in particular
+    /// before a layer's dismissal closed one. The menu bar's toggle reads it.
+    /// See `UiFact::MenuBarPress`.
+    pub(crate) shell_menu_open_before: Option<usize>,
     /// What the pointer is over *in the shell's tree*, as the tree itself
     /// reported it.
     ///

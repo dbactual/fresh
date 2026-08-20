@@ -316,6 +316,11 @@ impl Editor {
         let Some(mut ui) = self.shell_ui.take() else {
             return false;
         };
+        // What the menu was showing when this event arrived. Snapshotted
+        // before a single message is applied, because the first of them may be
+        // the layer's own dismissal — and a toggle has to know what it is
+        // toggling. See `UiFact::MenuBarPress`.
+        self.shell_menu_open_before = self.menu_state.active_menu;
         let result = ui.dispatch(input);
         self.shell_ui = Some(ui);
         // Claimed is reported, not inferred. Producing a message and taking
@@ -392,8 +397,13 @@ impl Editor {
                 self.shell_hover = target.clone();
                 self.menu_hover_reaction(target.as_ref());
             }
-            UiFact::MenuBarClick { index, was_active } => {
-                if was_active {
+            UiFact::MenuBarPress { index } => {
+                // `open_before` is what the menu was showing when this pointer
+                // event *arrived*, before the layer's dismissal closed it. A
+                // toggle needs that: by the time any message is applied the
+                // menu is already shut, so asking now would always answer "not
+                // open" and reopen what the press was meant to close.
+                if self.shell_menu_open_before == Some(index) {
                     self.close_menu_with_auto_hide();
                 } else {
                     self.active_window_mut().on_editor_focus_lost();

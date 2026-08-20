@@ -6,13 +6,17 @@
 //! decided placement in the same pass; here each level is a `Layer`, out of
 //! flow and painted in declaration order, and the chain is just their order.
 //!
-//! **Paint only, for now.** The levels carry no modality, no dismissal and no
-//! handlers: pointer input still runs through `chrome::Menu`'s boxes and the
-//! full-frame `chrome:menu_close_guard`, and each level is anchored at the
-//! rectangle `MenuRenderer::fit_dropdown_area` already chose. That is the same
-//! bridge the context-menu wave used — land the cells first, then move input,
-//! then let the layer's own `fit` decide placement — and it is what keeps the
-//! not-yet-migrated hit-testing agreeing with what is drawn.
+//! The bar row above them is a native region too, in the fold's background
+//! band, and both answer the pointer: the labels toggle their menus on the
+//! press, the rows activate on the release, and the outermost level's
+//! `OUTSIDE_POINTER` dismissal is what the full-frame
+//! `chrome:menu_close_guard` box used to be.
+//!
+//! **Geometry has not migrated.** Each level is still anchored at the
+//! rectangle `MenuRenderer::fit_dropdown_area` chose, rather than letting the
+//! layer's own `fit` place it, because the keyboard half still hit-tests
+//! against that walk's output and the two must agree on where the box is.
+//! That is the last piece of this wave, along with `layer_rank::MENU`.
 
 use std::rc::Rc;
 
@@ -42,10 +46,6 @@ pub struct BarItem {
     pub runs: Vec<(String, &'static str)>,
     /// Which menu this label opens.
     pub index: usize,
-    /// Whether its dropdown is open *as this tree was built*. The click
-    /// handler closes on true and opens on false; see `UiFact::MenuBarClick`
-    /// for why it cannot ask at click time.
-    pub active: bool,
 }
 
 /// The menu bar row: its labels, and the ground they sit on.
@@ -72,20 +72,17 @@ pub fn menu_bar(bar: &MenuBar) -> Node<UiMsg> {
                 .iter()
                 .map(|(t, theme)| Run::themed(t.clone(), *theme))
                 .collect();
-            let (index, active) = (it.index, it.active);
+            let index = it.index;
             gesture(text_runs(runs))
-                // Stops, because the row behind it closes the menu: a click
+                // Stops, because the row behind it closes the menu: a press
                 // bubbles to every handler on its path, so a label that only
                 // *answered* would be followed by the ground's close and the
-                // menu would open and shut in one press.
+                // menu would open and shut in one gesture.
                 .on(
-                    GestureKind::Click,
+                    GestureKind::Press,
                     Rc::new(move |e: &Event| {
                         e.stop();
-                        Some(UiMsg::Ui(UiFact::MenuBarClick {
-                            index,
-                            was_active: active,
-                        }))
+                        Some(UiMsg::Ui(UiFact::MenuBarPress { index }))
                     }),
                 )
                 .on_enter(hover(Some(HoverTarget::MenuBarItem(index))))
@@ -105,7 +102,13 @@ pub fn menu_bar(bar: &MenuBar) -> Node<UiMsg> {
     // first, because a click is derived per path and the label is the deeper
     // one.
     gesture(row().theme("menu.bar").children(labels))
-        .on_click(|_| UiMsg::Ui(UiFact::CloseMenu))
+        // On the press, with the labels above it: the whole bar acts on the
+        // same gesture, so the dismissal, the close and the toggle are one
+        // dispatch and cannot see each other's aftermath.
+        .on(
+            GestureKind::Press,
+            Rc::new(|_: &Event| Some(UiMsg::Ui(UiFact::CloseMenu))),
+        )
         .on_enter(hover(None))
 }
 
@@ -295,7 +298,6 @@ mod tests {
                             (" ".into(), "menu.bar"),
                         ],
                         index: 0,
-                        active: false,
                     },
                     BarItem {
                         runs: vec![
@@ -305,7 +307,6 @@ mod tests {
                             (" ".into(), "menu.bar"),
                         ],
                         index: 1,
-                        active: false,
                     },
                 ],
             },
@@ -317,6 +318,105 @@ mod tests {
         // `" File "` plus the separator space is 7 cells, exactly the stride
         // the label-area walk advances by.
         assert_eq!(line(&buf, 0), " File   Edit        ");
+    }
+
+    /// **The bar's labels are styled, and the test can see it.**
+    ///
+    /// Every shell test used to render through a palette that returned
+    /// `Style::default()`, so a highlighted row, a bold label and an
+    /// underlined mnemonic all came out identical and no assertion could tell
+    /// them apart. The mnemonic run is the sharpest case: it differs from the
+    /// characters either side of it *only* by its style.
+    #[test]
+    fn a_bar_label_carries_its_runs_styles() {
+        use crate::view::shell::fold::test_palette;
+        let bar = MenuBar {
+            items: vec![BarItem {
+                runs: vec![
+                    (" ".into(), "menu.bar.item.active"),
+                    ("F".into(), "menu.bar.item.active.mnemonic"),
+                    ("ile".into(), "menu.bar.item.active"),
+                ],
+                index: 0,
+            }],
+        };
+        let mut ui: Ui<UiMsg> = Ui::new();
+        let spec = ui
+            .frame(
+                frame_tree(Frame {
+                    menu_bar_items: bar,
+                    ..Frame::default()
+                }),
+                Size::new(20, 4),
+            )
+            .clone();
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 4));
+        fold_native(&spec, &mut buf, &test_palette::palette, Band::Background);
+
+        assert_eq!(
+            buf[(1, 0)].style(),
+            test_palette::painted("menu.bar.item.active.mnemonic"),
+            "the mnemonic is underlined and bold"
+        );
+        assert_eq!(
+            buf[(2, 0)].style(),
+            test_palette::painted("menu.bar.item.active"),
+            "the character beside it is only bold"
+        );
+        assert_ne!(
+            buf[(1, 0)].style(),
+            buf[(2, 0)].style(),
+            "and the two differ, which is the whole point of a run"
+        );
+    }
+
+    /// **A display list is not a diff.** `Cell::set_style` patches, so an item
+    /// painted over cells a legacy painter left behind inherited their
+    /// modifiers — a dropdown over the active tab came out bold. The fold
+    /// resets first; this is the cell-level assertion that catches it, and no
+    /// test could make it while every palette style was `Style::default()`.
+    #[test]
+    fn a_dropdown_row_replaces_the_style_beneath_it_rather_than_patching_it() {
+        use crate::view::shell::fold::test_palette;
+        use ratatui::style::{Modifier, Style};
+
+        let mut ui: Ui<UiMsg> = Ui::new();
+        let spec = ui
+            .frame(
+                frame_tree(Frame {
+                    dropdowns: vec![DropdownLevel {
+                        x: 0,
+                        y: 0,
+                        width: 10,
+                        rows: vec![DropdownRow {
+                            text: " New    ".into(),
+                            theme: "menu.item",
+                        }],
+                    }],
+                    ..Frame::default()
+                }),
+                Size::new(20, 4),
+            )
+            .clone();
+
+        // A legacy painter got here first and left bold cells behind.
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 4));
+        for x in 0..20u16 {
+            for y in 0..4u16 {
+                buf[(x, y)].set_style(Style::default().add_modifier(Modifier::BOLD));
+            }
+        }
+        fold_native(&spec, &mut buf, &test_palette::palette, Band::Overlay);
+
+        assert_eq!(
+            buf[(2, 1)].style(),
+            test_palette::painted("menu.item"),
+            "the row says what its cells look like outright"
+        );
+        assert!(
+            !buf[(2, 1)].style().add_modifier.contains(Modifier::BOLD),
+            "the bold underneath is gone, not inherited"
+        );
     }
 
     /// **A style inside a run.** The mnemonic is one underlined character in
@@ -335,7 +435,6 @@ mod tests {
                     (" ".into(), "menu.bar"),
                 ],
                 index: 0,
-                active: false,
             }],
         };
         let mut ui: Ui<UiMsg> = Ui::new();
@@ -367,16 +466,37 @@ mod tests {
     /// A migrated region is still a region: everything that asks for the menu
     /// bar's rectangle by name keeps getting an answer, now that no
     /// `Draw::Host` announces it.
+    ///
+    /// **And it is the chrome column's top row**, dock or no dock — which is
+    /// what lets `shell_frame` derive the rect it walks the menu with instead
+    /// of reading it back off the previous frame's tree. Build must not depend
+    /// on layout; this is the fact that makes it unnecessary.
     #[test]
-    fn the_bar_still_reports_its_rectangle() {
+    fn the_bar_is_the_chrome_columns_top_row() {
         use crate::view::shell::frame::{region_rects, HostRegion};
-        let rects = region_rects(Frame::default(), Rect::new(0, 0, 30, 8));
-        let bar = rects
-            .iter()
-            .find(|(r, _)| *r == HostRegion::MenuBar)
-            .expect("the menu bar still has a rectangle")
-            .1;
-        assert_eq!(bar, Rect::new(0, 0, 30, 1));
+        let bar_of = |f: Frame, size: Rect| {
+            region_rects(f, size)
+                .iter()
+                .find(|(r, _)| *r == HostRegion::MenuBar)
+                .expect("the menu bar still has a rectangle")
+                .1
+        };
+        assert_eq!(
+            bar_of(Frame::default(), Rect::new(0, 0, 30, 8)),
+            Rect::new(0, 0, 30, 1)
+        );
+        // With a dock carved off the left, the bar starts where the chrome
+        // column does and is only as wide as what is left.
+        assert_eq!(
+            bar_of(
+                Frame {
+                    dock: Some(9),
+                    ..Frame::default()
+                },
+                Rect::new(0, 0, 40, 8)
+            ),
+            Rect::new(9, 0, 31, 1)
+        );
     }
 
     /// **Declaration order is paint order.** A submenu opens to the right of
@@ -442,7 +562,7 @@ mod input_tests {
     use crate::view::shell::frame::{frame_tree, Frame};
     use fresh_ui::{Input, Mods, MouseButton, Point, Size, Ui};
 
-    fn bar_item(label: &str, index: usize, active: bool) -> BarItem {
+    fn bar_item(label: &str, index: usize) -> BarItem {
         BarItem {
             runs: vec![
                 (" ".into(), "menu.bar.item"),
@@ -451,7 +571,6 @@ mod input_tests {
                 (" ".into(), "menu.bar"),
             ],
             index,
-            active,
         }
     }
 
@@ -461,10 +580,7 @@ mod input_tests {
         ui.frame(
             frame_tree(Frame {
                 menu_bar_items: MenuBar {
-                    items: vec![
-                        bar_item("File", 0, active == Some(0)),
-                        bar_item("Edit", 1, active == Some(1)),
-                    ],
+                    items: vec![bar_item("File", 0), bar_item("Edit", 1)],
                 },
                 dropdowns: active
                     .map(|_| {
@@ -490,6 +606,15 @@ mod input_tests {
             Size::new(30, 10),
         );
         ui
+    }
+
+    fn facts(msgs: Vec<UiMsg>) -> Vec<UiFact> {
+        msgs.into_iter()
+            .map(|m| match m {
+                UiMsg::Ui(f) => f,
+                other => panic!("unexpected {other:?}"),
+            })
+            .collect()
     }
 
     fn press(ui: &mut Ui<UiMsg>, x: i32, y: i32) -> fresh_ui::Dispatch<UiMsg> {
@@ -525,48 +650,32 @@ mod input_tests {
             .collect()
     }
 
-    /// A label opens its menu — and says *only* that.
+    /// A label toggles its menu — and says *only* that.
     ///
-    /// **The exact list matters.** A click bubbles to every handler on its
+    /// **The exact list matters.** A press bubbles to every handler on its
     /// path, and the row behind the labels closes the menu. A label that
-    /// answered without stopping produced `[MenuBarClick, CloseMenu]`: the
-    /// menu opened and shut in one press. Asserting `contains` passed that
+    /// answered without stopping produced `[MenuBarPress, CloseMenu]`: the
+    /// menu opened and shut in one gesture. Asserting `contains` passed that
     /// happily; asserting the list is what catches it.
     #[test]
-    fn clicking_a_bar_label_opens_that_menu_and_says_nothing_else() {
+    fn pressing_a_bar_label_toggles_that_menu_and_says_nothing_else() {
         let mut ui = open_menu(None);
-        let got = click(&mut ui, 1, 0);
-        assert_eq!(
-            got,
-            vec![UiFact::MenuBarClick {
-                index: 0,
-                was_active: false
-            }]
-        );
+        let got = facts(press(&mut ui, 1, 0).msgs);
+        assert_eq!(got, vec![UiFact::MenuBarPress { index: 0 }]);
     }
 
-    /// **Why the click carries `was_active`.** Clicking the open menu's own
-    /// label closes it. By the time the click lands, the layer's own
-    /// outside-pointer dismissal has already fired, so asking "is this menu
-    /// open?" then would answer no and reopen it — a toggle that never
-    /// toggles. The tree carries the answer from when it was built.
+    /// **The toggle is one gesture, and one dispatch.** Pressing the open
+    /// menu's own label produces the dismissal *and* the toggle together, so
+    /// the applier can still see which menu was open before either ran. Split
+    /// across press and release it could not: the menu is shut by then, and
+    /// the frame in between has rebuilt the tree.
     #[test]
-    fn clicking_the_open_menus_label_closes_it() {
+    fn pressing_the_open_menus_label_reports_dismissal_and_toggle_together() {
         let mut ui = open_menu(Some(0));
-        let got = click(&mut ui, 1, 0);
-        // The label is outside the dropdown, so dismissal answers first and
-        // the label's own click follows. Both close, and closing twice is
-        // closing once — but `was_active` is what makes the second one a close
-        // rather than a reopen.
+        let got = facts(press(&mut ui, 1, 0).msgs);
         assert_eq!(
             got,
-            vec![
-                UiFact::CloseMenu,
-                UiFact::MenuBarClick {
-                    index: 0,
-                    was_active: true
-                }
-            ]
+            vec![UiFact::CloseMenu, UiFact::MenuBarPress { index: 0 }]
         );
     }
 
@@ -578,18 +687,12 @@ mod input_tests {
     #[test]
     fn clicking_another_label_closes_one_menu_and_opens_the_other() {
         let mut ui = open_menu(Some(0));
-        let got = click(&mut ui, 8, 0);
+        let got = facts(press(&mut ui, 8, 0).msgs);
         // Dismissal first, then the label: close this, open that. Nothing
         // after, or the open would be undone.
         assert_eq!(
             got,
-            vec![
-                UiFact::CloseMenu,
-                UiFact::MenuBarClick {
-                    index: 1,
-                    was_active: false
-                }
-            ]
+            vec![UiFact::CloseMenu, UiFact::MenuBarPress { index: 1 }]
         );
     }
 

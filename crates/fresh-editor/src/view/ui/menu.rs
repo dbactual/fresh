@@ -4,7 +4,6 @@ use crate::app::types::CellThemeRecorder;
 use crate::config::{generate_dynamic_items, Menu, MenuItem, MenuItemExt};
 use crate::primitives::display_width::str_width;
 use crate::view::theme::Theme;
-use crate::view::ui::layout::point_in_rect;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 
@@ -220,19 +219,6 @@ impl MenuRowStyle {
     }
 }
 
-/// Hit test result for menu interactions
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MenuHit {
-    /// Hit a top-level menu label
-    MenuLabel(usize),
-    /// Hit a dropdown item (in the main dropdown)
-    DropdownItem(usize),
-    /// Hit a submenu item at a given depth
-    SubmenuItem { depth: usize, index: usize },
-    /// Hit the menu bar background
-    BarBackground,
-}
-
 impl MenuLayout {
     /// Create a new empty layout
     pub fn new(bar_area: Rect) -> Self {
@@ -246,61 +232,6 @@ impl MenuLayout {
             dropdown_box: None,
             submenu_boxes: Vec::new(),
         }
-    }
-
-    /// Get the menu index at a given position
-    pub fn menu_at(&self, x: u16, y: u16) -> Option<usize> {
-        for (idx, area) in &self.menu_areas {
-            if point_in_rect(*area, x, y) {
-                return Some(*idx);
-            }
-        }
-        None
-    }
-
-    /// Get the dropdown item index at a given position
-    pub fn item_at(&self, x: u16, y: u16) -> Option<usize> {
-        for (idx, area) in &self.item_areas {
-            if point_in_rect(*area, x, y) {
-                return Some(*idx);
-            }
-        }
-        None
-    }
-
-    /// Get the submenu item at a given position
-    pub fn submenu_item_at(&self, x: u16, y: u16) -> Option<(usize, usize)> {
-        for (depth, idx, area) in &self.submenu_areas {
-            if point_in_rect(*area, x, y) {
-                return Some((*depth, *idx));
-            }
-        }
-        None
-    }
-
-    /// Perform a complete hit test
-    pub fn hit_test(&self, x: u16, y: u16) -> Option<MenuHit> {
-        // Check submenu items first (they're on top)
-        if let Some((depth, idx)) = self.submenu_item_at(x, y) {
-            return Some(MenuHit::SubmenuItem { depth, index: idx });
-        }
-
-        // Check dropdown items
-        if let Some(idx) = self.item_at(x, y) {
-            return Some(MenuHit::DropdownItem(idx));
-        }
-
-        // Check menu labels
-        if let Some(idx) = self.menu_at(x, y) {
-            return Some(MenuHit::MenuLabel(idx));
-        }
-
-        // Check bar background
-        if point_in_rect(self.bar_area, x, y) {
-            return Some(MenuHit::BarBackground);
-        }
-
-        None
     }
 }
 
@@ -838,11 +769,8 @@ impl MenuRenderer {
             // The gap to the next label wears the bar's ground, not this
             // label's — `Span::raw` did that by carrying no style at all.
             runs.push((" ".to_string(), "menu.bar"));
-            bar.items.push(crate::view::shell::menu::BarItem {
-                runs,
-                index: idx,
-                active: is_active,
-            });
+            bar.items
+                .push(crate::view::shell::menu::BarItem { runs, index: idx });
 
             // Move to next position: label_width + 1 for trailing space
             current_x += label_width + 1;
@@ -1470,120 +1398,6 @@ mod tests {
         state.highlighted_item = Some(1); // Separator
 
         assert!(state.get_highlighted_action(&menus).is_none());
-    }
-
-    #[test]
-    fn test_menu_layout_menu_at() {
-        // Build a layout manually simulating what render would produce
-        let bar_area = Rect::new(0, 0, 80, 1);
-        let mut layout = MenuLayout::new(bar_area);
-
-        // " File " at x=0, width=6
-        layout.menu_areas.push((0, Rect::new(0, 0, 6, 1)));
-        // " Edit " at x=7, width=6
-        layout.menu_areas.push((1, Rect::new(7, 0, 6, 1)));
-        // " View " at x=14, width=6
-        layout.menu_areas.push((2, Rect::new(14, 0, 6, 1)));
-
-        // File: x=0-5, y=0
-        assert_eq!(layout.menu_at(0, 0), Some(0));
-        assert_eq!(layout.menu_at(3, 0), Some(0));
-        assert_eq!(layout.menu_at(5, 0), Some(0));
-
-        // Space between: x=6
-        assert_eq!(layout.menu_at(6, 0), None);
-
-        // Edit: x=7-12
-        assert_eq!(layout.menu_at(7, 0), Some(1));
-        assert_eq!(layout.menu_at(10, 0), Some(1));
-        assert_eq!(layout.menu_at(12, 0), Some(1));
-
-        // Space between: x=13
-        assert_eq!(layout.menu_at(13, 0), None);
-
-        // View: x=14-19
-        assert_eq!(layout.menu_at(14, 0), Some(2));
-        assert_eq!(layout.menu_at(17, 0), Some(2));
-        assert_eq!(layout.menu_at(19, 0), Some(2));
-
-        // After View
-        assert_eq!(layout.menu_at(20, 0), None);
-        assert_eq!(layout.menu_at(100, 0), None);
-
-        // Wrong row returns None
-        assert_eq!(layout.menu_at(3, 1), None);
-    }
-
-    #[test]
-    fn test_menu_layout_item_at() {
-        // Build a layout manually simulating what render would produce
-        let bar_area = Rect::new(0, 0, 80, 1);
-        let mut layout = MenuLayout::new(bar_area);
-
-        // Dropdown items for File menu at x=1 (inside border), y=2,3,4,5 (inside border)
-        // Item 0 (New) at y=2
-        layout.item_areas.push((0, Rect::new(1, 2, 20, 1)));
-        // Item 1 (Separator) at y=3
-        layout.item_areas.push((1, Rect::new(1, 3, 20, 1)));
-        // Item 2 (Save) at y=4
-        layout.item_areas.push((2, Rect::new(1, 4, 20, 1)));
-        // Item 3 (Quit) at y=5
-        layout.item_areas.push((3, Rect::new(1, 5, 20, 1)));
-
-        // Menu bar row returns None
-        assert_eq!(layout.item_at(5, 0), None);
-        // Border row returns None
-        assert_eq!(layout.item_at(5, 1), None);
-
-        // y=2: New (index 0)
-        assert_eq!(layout.item_at(5, 2), Some(0));
-
-        // y=3: Separator (index 1) - note: layout includes all items, filtering happens elsewhere
-        assert_eq!(layout.item_at(5, 3), Some(1));
-
-        // y=4: Save (index 2)
-        assert_eq!(layout.item_at(5, 4), Some(2));
-
-        // y=5: Quit (index 3)
-        assert_eq!(layout.item_at(5, 5), Some(3));
-
-        // Beyond items
-        assert_eq!(layout.item_at(5, 6), None);
-        assert_eq!(layout.item_at(5, 100), None);
-    }
-
-    #[test]
-    fn test_menu_layout_hit_test() {
-        let bar_area = Rect::new(0, 0, 80, 1);
-        let mut layout = MenuLayout::new(bar_area);
-
-        // Menu labels
-        layout.menu_areas.push((0, Rect::new(0, 0, 6, 1)));
-
-        // Dropdown items
-        layout.item_areas.push((0, Rect::new(1, 2, 20, 1)));
-        layout.item_areas.push((1, Rect::new(1, 3, 20, 1)));
-
-        // Submenu items at depth 1
-        layout.submenu_areas.push((1, 0, Rect::new(22, 3, 15, 1)));
-
-        // Hit test menu label
-        assert_eq!(layout.hit_test(3, 0), Some(MenuHit::MenuLabel(0)));
-
-        // Hit test dropdown item
-        assert_eq!(layout.hit_test(5, 2), Some(MenuHit::DropdownItem(0)));
-
-        // Hit test submenu item (should have priority)
-        assert_eq!(
-            layout.hit_test(25, 3),
-            Some(MenuHit::SubmenuItem { depth: 1, index: 0 })
-        );
-
-        // Hit test bar background (inside bar area but not on menu)
-        assert_eq!(layout.hit_test(50, 0), Some(MenuHit::BarBackground));
-
-        // Hit test outside everything
-        assert_eq!(layout.hit_test(50, 10), None);
     }
 
     #[test]

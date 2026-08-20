@@ -58,7 +58,7 @@ pub use file_explorer::{ExplorerDecorations, FileExplorerRenderer};
 pub use focus::FocusManager;
 pub use layout::point_in_rect;
 #[cfg(feature = "runtime")]
-pub use menu::{context_keys, MenuContext, MenuHit, MenuLayout, MenuRenderer, MenuState};
+pub use menu::{context_keys, MenuContext, MenuLayout, MenuRenderer, MenuState};
 pub(crate) use menu::{BarLabelStyle, MenuRowStyle};
 #[cfg(feature = "runtime")]
 pub use menu_input::MenuInputHandler;

@@ -227,9 +227,16 @@ pub fn fold_band(
         }
     }
 
-    // `LayoutSpec::cursor` belongs to whichever band placed it; reporting it
-    // from both would double-count. The overlay band answers for it, because a
-    // focused field in a layer is exactly the case that must win.
+    // There is one `LayoutSpec::cursor` per frame, and the display list does
+    // not record which half placed it — so this reports it from the **last**
+    // band rather than pretending to know its provenance. Reporting it from
+    // both would hand the caller the same caret twice; reporting it from the
+    // first would let a host painted later overwrite a native field's caret,
+    // which is the one thing the rule forbids.
+    //
+    // A background surface that places a cursor is therefore still answered
+    // for, just by the overlay pass — which is correct, because the overlay
+    // pass runs last and nothing can have covered it since.
     let native = match band {
         Band::Overlay => spec.cursor.filter(|c| c.visible),
         Band::Background => None,
@@ -237,6 +244,62 @@ pub fn fold_band(
     native
         .map(|c| (c.pos.x.max(0) as u16, c.pos.y.max(0) as u16))
         .or(host_caret)
+}
+
+/// A palette whose styles are *distinguishable*, for tests.
+///
+/// The shell's tests all used `Style::default()`, so every cell came out
+/// looking the same and no test could tell a highlighted row from an ordinary
+/// one, a bold label from a plain one, or a fill that reset the cell beneath
+/// it from one that inherited its modifiers. Four cell-level bugs reached CI
+/// through that gap in a single wave. A test that renders should be able to
+/// assert *how* a cell looks, not only what it says.
+///
+/// Each theme name gets its own colour, and the two modifiers the real
+/// [`ShellPalette`](crate::app::ShellPalette) applies — bold for an active
+/// menu-bar label, underline for its mnemonic — are reproduced from the name,
+/// so a test asserting them is asserting the same structure the editor uses.
+#[cfg(test)]
+pub(crate) mod test_palette {
+    use ratatui::style::{Color, Modifier, Style};
+
+    use fresh_ui::ThemeKey;
+
+    /// The style this palette gives a theme name.
+    pub(crate) fn of(name: &str) -> Style {
+        // Distinct per name, and stable across runs: an assertion names the
+        // theme, not a colour number.
+        let n = name
+            .bytes()
+            .fold(7u16, |a, b| a.wrapping_mul(31).wrapping_add(b as u16));
+        let mut style = Style::default()
+            .fg(Color::Indexed((n % 100) as u8 + 16))
+            .bg(Color::Indexed((n % 100) as u8 + 128));
+        if name.contains(".active") {
+            style = style.add_modifier(Modifier::BOLD);
+        }
+        if name.ends_with(".mnemonic") {
+            style = style.add_modifier(Modifier::UNDERLINED);
+        }
+        style
+    }
+
+    /// The palette itself, for handing to [`super::fold_native`].
+    pub(crate) fn palette(theme: &ThemeKey) -> Style {
+        of(theme.as_str())
+    }
+
+    /// What a cell painted under this palette actually carries.
+    ///
+    /// Computed by painting one, rather than by reproducing the arithmetic:
+    /// the fold applies `Style::reset()` before the theme's own style and
+    /// `Cell::set_style` patches, so the modifier bookkeeping is easy to
+    /// restate wrongly and impossible to get wrong this way.
+    pub(crate) fn painted(name: &str) -> Style {
+        let mut cell = ratatui::buffer::Cell::default();
+        cell.set_style(Style::reset().patch(of(name)));
+        cell.style()
+    }
 }
 
 // ---------------------------------------------------------------------------

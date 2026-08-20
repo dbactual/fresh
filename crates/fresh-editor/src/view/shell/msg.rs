@@ -52,14 +52,21 @@ pub enum UiFact {
     /// *what the menu does about it*, and the machine is the part with the
     /// subtle cases (staying put on a submenu's parent so it does not blink).
     MenuHover(Option<crate::app::types::HoverTarget>),
-    /// A click on a bar label.
+    /// A **press** on a bar label. Toggles that menu.
     ///
-    /// `was_active` is decided when the tree is built, not when the click
-    /// lands: by then the layer's own outside-pointer dismissal has already
-    /// closed the menu, so asking "is this menu open?" would always answer no
-    /// and clicking an open menu's label would reopen it instead of toggling
-    /// it shut.
-    MenuBarClick { index: usize, was_active: bool },
+    /// Press, not click, and that is what makes the toggle work. The layer's
+    /// outside-pointer dismissal fires on the press too, so both land in one
+    /// dispatch and the applier can look at what was open *before* either of
+    /// them ran. On the release it could not: the menu is closed by then, and
+    /// the frame in between has already rebuilt the tree — so a label that
+    /// carried its own open-ness would carry a stale answer and reopen the
+    /// menu it was meant to shut.
+    ///
+    /// It is also what the pre-migration code did: menu-bar routing ran off
+    /// `MouseEventKind::Down`. Pressing the bar and releasing over an item —
+    /// the way a menu bar is used — needs exactly this split, the bar acting
+    /// on the press and the row on the release.
+    MenuBarPress { index: usize },
     /// A click on a dropdown row, named by its level and position.
     MenuItemClick { depth: usize, index: usize },
     /// Close the open menu (an outside click, or a click on an inert cell of
