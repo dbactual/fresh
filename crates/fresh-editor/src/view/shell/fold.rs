@@ -65,9 +65,10 @@ impl<F: Fn(&ThemeKey) -> Style> Palette for F {
 /// those, which is why migration was previously confined to surfaces that
 /// paint over everything.
 ///
-/// The two bands are the same list, cut once. Legacy painters run in between,
-/// so each band lands where its surface belongs, and the rule that migration
-/// must proceed top-down through the old paint order retires with it.
+/// The two bands are the same list, cut once at `LayoutSpec::layers_from`.
+/// Legacy painters run in between, so each band lands where its surface
+/// belongs, and the rule that migration must proceed top-down through the old
+/// paint order retires with it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Band {
     /// In-flow content: everything before the first overlay.
@@ -112,25 +113,6 @@ pub fn fold_native(
     fold_band(spec, buf, palette, &mut Skip, band)
 }
 
-/// Where the overlay band begins: the first item any `Layer` produced.
-///
-/// `fresh-ui` paints the tree and then its layers, in that order, so every
-/// layer item sits in one contiguous tail, and the earliest of them is the
-/// cut. Which items those are comes from [`super::frame::OVERLAY_FAMILIES`] —
-/// the declaring side is the side that knows which of its nodes are layers.
-///
-/// A `layers_from` index on `LayoutSpec` would state this outright instead of
-/// deriving it. Deriving it needs no library change, and is exact as long as
-/// layers paint last, which the library states.
-fn overlay_start(spec: &LayoutSpec) -> usize {
-    spec.index
-        .iter()
-        .filter(|(k, _)| super::frame::is_overlay_key(k))
-        .map(|(_, r)| r.start)
-        .min()
-        .unwrap_or(spec.items.len())
-}
-
 /// Fold a display list into `buf`, returning the caret position for the frame.
 ///
 /// **Caret rule.** A native `fresh-ui` widget that placed a cursor
@@ -161,10 +143,14 @@ pub fn fold_band(
     let frame = buf.area;
     let mut host_caret: Caret = None;
 
-    let cut = overlay_start(spec);
+    // The library says where the split is. It used to be derived here, by
+    // matching keys against a hand-kept list of the frame's layer families —
+    // which was wrong for a scrim (unkeyed, and pushed *before* its layer's
+    // items) and for an unkeyed layer (`widgets::Dropdown` has none), and
+    // would have put both on the background side, silently.
     let items = match band {
-        Band::Background => &spec.items[..cut],
-        Band::Overlay => &spec.items[cut..],
+        Band::Background => spec.in_flow(),
+        Band::Overlay => spec.layers(),
     };
     for item in items {
         // From a reset, not a patch. An item's theme says what its cells look
@@ -188,6 +174,14 @@ pub fn fold_band(
             // already there, and takes the palette's style unreset.
             Draw::Scrim(Scrim::Dim) => restyle(buf, frame, palette.style(&item.theme), frame),
             Draw::Lines(lines) => {
+                // Clipped to the item's own rect as well as its inherited one:
+                // an item declares how much room it has. Layout hands a
+                // constrained node the width it was *allowed*, not the width
+                // its content wants, so a run can be longer than the rect
+                // carrying it — and one that is would paint through whatever
+                // encloses it, a menu row straight through its own border.
+                // The library's own backends make the same guarantee.
+                let clip = intersect(clip, rect);
                 for (i, line) in lines.iter().enumerate() {
                     let y = rect.y.saturating_add(i as u16);
                     let mut x = rect.x;
@@ -598,14 +592,21 @@ mod band_tests {
             30,
             10,
         );
-        let cut = overlay_start(&spec);
-        assert!(cut > 0, "the frame's regions are background");
-        assert!(cut < spec.items.len(), "its layers are overlay");
+        assert!(
+            !spec.in_flow().is_empty(),
+            "the frame's regions are background"
+        );
+        assert!(!spec.layers().is_empty(), "its layers are overlay");
+        assert_eq!(
+            spec.in_flow().len() + spec.layers().len(),
+            spec.items.len(),
+            "and nothing is dropped or counted twice"
+        );
     }
 
-    /// Every item before the cut is a host region, and every item after it
-    /// belongs to a layer — which is what makes "background" and "overlay"
-    /// mean what they say.
+    /// Every item in the background band belongs to the frame itself, and the
+    /// overlay band carries the menus' boxes — which is what makes
+    /// "background" and "overlay" mean what they say.
     #[test]
     fn the_background_band_is_the_regions_and_the_overlay_band_is_the_layers() {
         let spec = spec_of(
@@ -617,25 +618,15 @@ mod band_tests {
             30,
             10,
         );
-        let cut = overlay_start(&spec);
-        let overlay_items: std::collections::HashSet<usize> = spec
-            .index
-            .iter()
-            .filter(|(k, _)| crate::view::shell::frame::is_overlay_key(k))
-            .flat_map(|(_, r)| r.clone())
-            .collect();
-        for (i, item) in spec.items.iter().enumerate() {
-            assert_eq!(
-                i >= cut,
-                overlay_items.contains(&i),
-                "item {i} ({:?}) is on the wrong side of the cut",
+        for item in spec.in_flow() {
+            assert!(
+                !matches!(item.draw, Draw::Border | Draw::Scrim(_)),
+                "a layer's item landed in the background band: {:?}",
                 item.draw
             );
         }
         assert!(
-            spec.items[cut..]
-                .iter()
-                .any(|i| matches!(i.draw, Draw::Border)),
+            spec.layers().iter().any(|i| matches!(i.draw, Draw::Border)),
             "the overlay band must carry the menus' boxes"
         );
     }
@@ -646,10 +637,42 @@ mod band_tests {
     #[test]
     fn a_frame_with_no_layers_is_all_background() {
         let spec = spec_of(Frame::default(), 30, 10);
-        assert_eq!(overlay_start(&spec), spec.items.len());
+        assert!(spec.layers().is_empty());
         assert!(painted(&spec, Band::Overlay, 30, 10)
             .iter()
             .all(|r| r.chars().all(|c| c == ' ')));
+    }
+
+    /// **An item declares how much room it has.** A run longer than the rect
+    /// carrying it must not paint through whatever encloses it — a menu row
+    /// through its own border, which is what a `Paragraph`'s silent
+    /// truncation used to hide.
+    #[test]
+    fn a_run_longer_than_its_item_is_clipped_to_it() {
+        use crate::view::shell::menu::{DropdownLevel, DropdownRow};
+        let spec = spec_of(
+            Frame {
+                dropdowns: vec![DropdownLevel {
+                    x: 0,
+                    y: 0,
+                    // Inner width 6, but the row claims ten cells of text.
+                    width: 8,
+                    rows: vec![DropdownRow {
+                        text: "0123456789".into(),
+                        theme: "menu.item",
+                    }],
+                }],
+                ..Frame::default()
+            },
+            20,
+            6,
+        );
+        let rows = painted(&spec, Band::Overlay, 20, 6);
+        let painted_box: String = rows[1].chars().take(8).collect();
+        assert_eq!(
+            painted_box, "\u{2502}012345\u{2502}",
+            "the border survives the row: {rows:?}"
+        );
     }
 
     /// **The point of the split.** A layer paints in the overlay band and
@@ -678,12 +701,15 @@ mod band_tests {
         );
     }
 
-    /// **Holds the two lists together.** Every layer `frame_tree` can declare
-    /// must be recognised as an overlay; one that is not would paint in the
-    /// background band, under the legacy painters, and simply vanish.
+    /// **Every layer the frame declares reaches the overlay band**, whether or
+    /// not it is keyed.
+    ///
+    /// This used to be a check that each layer named a family in a
+    /// hand-maintained list, which could only ever confirm what the list
+    /// already said. The split is the library's now, so what is worth pinning
+    /// is the property itself: three layers, three boxes above the fold.
     #[test]
-    fn overlays_are_recognised() {
-        use crate::view::shell::frame::is_overlay_key;
+    fn every_declared_layer_reaches_the_overlay_band() {
         let spec = spec_of(
             Frame {
                 menu: Some(a_menu()),
@@ -693,14 +719,18 @@ mod band_tests {
             30,
             10,
         );
-        // Three layers: two dropdown levels and the context menu.
-        let recognised = spec.index.iter().filter(|(k, _)| is_overlay_key(k)).count();
-        assert_eq!(
-            recognised,
-            3,
-            "every declared layer must name a family in OVERLAY_FAMILIES; \
-             index was {:?}",
-            spec.index.iter().map(|(k, _)| k).collect::<Vec<_>>()
+        // Two dropdown levels and the context menu, each a bordered box.
+        let boxes = spec
+            .layers()
+            .iter()
+            .filter(|i| matches!(i.draw, Draw::Border))
+            .count();
+        assert_eq!(boxes, 3, "every declared layer paints above the fold");
+        assert!(
+            spec.in_flow()
+                .iter()
+                .all(|i| !matches!(i.draw, Draw::Border)),
+            "and none of them below it"
         );
     }
 }

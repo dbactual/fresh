@@ -49,12 +49,14 @@ pub struct MenuLayout {
 
 /// Exactly `width` cells: padded if short, cut if long.
 ///
-/// The row *is* what the cells contain, so it has to be that wide. The
-/// ratatui `Paragraph` this replaced truncated silently — which several of the
-/// formulas quietly relied on (a separator and an info label are both built
-/// one cell too wide, and any label longer than the box overflows), and a
-/// display list has no such courtesy: an over-long run paints straight through
-/// the box's right border.
+/// The padding is the load-bearing half: a highlighted row is a full-width
+/// block of colour, not a colour that stops where the label does, so the row
+/// genuinely is that wide and the string has to say so.
+///
+/// The cut is belt and braces. It matters because several of these formulas
+/// quietly relied on the ratatui `Paragraph`'s silent truncation — a separator
+/// and an info label are both built one cell too wide — but overflow is the
+/// backend's to clip now, and the fold does.
 fn fit(s: String, width: usize) -> String {
     let w = str_width(&s);
     if w == width {

@@ -1104,18 +1104,33 @@ any legacy painter, `Overlay` after all of them — and the legacy painters run
 in between. Each band lands where its surface belongs, and the
 "migrate top-down through the old paint order" rule retires with it.
 
-The cut is derived, not stored: `fresh-ui` paints the tree and then its layers,
-so every layer item sits in one contiguous tail and the earliest of them is the
-boundary. `frame::OVERLAY_FAMILIES` names the key families the frame's layers
-carry, matched by family name so a chain of dropdowns needs one entry rather
-than one per depth, and `overlays_are_recognised` holds the two lists together
-— an unrecognised layer would paint in the background band and vanish under the
-legacy painters, which is exactly the silent failure worth a test.
+**The cut is the library's**, and briefly was not. The first version derived it
+here, by matching item keys against a hand-kept list of the frame's layer
+families — which is precisely the "no hand-specified exceptions" the library's
+second goal rules out, and it was already wrong twice over:
 
-A `layers_from` index on `LayoutSpec` would state the boundary outright instead
-of deriving it. It is a candidate for a later base PR; the derivation needs no
-library change and is exact as long as layers paint last, which the library
-states.
+- **A scrim carries no key**, and is pushed *before* its layer's own items. An
+  index-derived boundary puts it on the background side, so a modal's dimming
+  would paint under the content it exists to dim. That is the rest of S3.
+- **A layer need not be keyed at all.** `widgets::Dropdown`'s is not, so its
+  whole pop-over produces no index entry and reads as in-flow content — it
+  would vanish under the legacy painters. That is the first library widget S4
+  reaches for.
+
+`LayoutSpec::layers_from` says it outright (base PR #3052), with `in_flow()`
+and `layers()` as the two halves, and `OVERLAY_FAMILIES` and its guard test are
+deleted. Same diagnosis as `Dispatch::claimed`: the library already computed it
+and threw it away. **The rule this keeps proving — when the editor finds itself
+inferring something the library knows, that is a missing library capability,
+not a place for an editor convention.**
+
+That PR also closed a second gap it turned up. A `Draw::Lines` run can be
+longer than the rect carrying it, because layout hands a constrained node the
+width it was *allowed* rather than the width its content wants — and every
+backend in the repo, the fold included, drew the string while honouring only
+the *inherited* clip. So an over-long row painted straight through its own
+border, which is what the ratatui `Paragraph`'s silent truncation had been
+hiding. An item declares how much room it has; the backends clip to it now.
 
 **What this unblocks, all at once:** the status bar and the search-options row
 (S2, which had been stuck precisely because popups paint over the bar's row),
@@ -1443,10 +1458,9 @@ list.
 
    The fold is two passes now, `Background` before every legacy painter and
    `Overlay` after all of them, so each band lands where its surface belongs
-   and the ordering rule retires. What replaces it is a much weaker one: a
-   surface must name the band it belongs to, and a `Layer` is an overlay while
-   anything in flow is background. Getting *that* wrong is still silent, so
-   `frame::OVERLAY_FAMILIES` is checked by a test.
+   and the ordering rule retires. Nothing replaces it: which band an item
+   belongs to is `LayoutSpec::layers_from`'s answer, not a convention anyone
+   has to maintain.
 1. ~~**The fold-callback API**~~ — **prototyped** (§5.0). `HostPainter` +
    `impl HostPainter for Editor`; paint order, clipping, the caret rule and the
    borrow are covered by tests. What remains is threading real per-frame state
