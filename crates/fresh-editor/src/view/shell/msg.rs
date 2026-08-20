@@ -29,7 +29,10 @@ pub enum UiMsg {
 }
 
 /// The positional half: facts about *where*, which never become keybindings.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// `PartialEq` but not `Eq`: `HoverTarget` carries paths and is only partially
+/// comparable, and tests compare facts.
+#[derive(Clone, Debug, PartialEq)]
 pub enum UiFact {
     /// Dismiss the open context menu.
     CloseContextMenu,
@@ -39,6 +42,29 @@ pub enum UiFact {
     ActivateContextMenuItem(usize),
     /// Move the highlight one row up or down.
     StepContextMenu(MenuStep),
+
+    // -- menu bar ------------------------------------------------------------
+    /// The pointer entered or left something the menu reacts to.
+    ///
+    /// Carries a `HoverTarget` because the reaction is the existing state
+    /// machine (`menu_hover_reaction`): bar auto-switch, submenu open/close,
+    /// highlight. Migrating *where the pointer is* does not require rewriting
+    /// *what the menu does about it*, and the machine is the part with the
+    /// subtle cases (staying put on a submenu's parent so it does not blink).
+    MenuHover(Option<crate::app::types::HoverTarget>),
+    /// A click on a bar label.
+    ///
+    /// `was_active` is decided when the tree is built, not when the click
+    /// lands: by then the layer's own outside-pointer dismissal has already
+    /// closed the menu, so asking "is this menu open?" would always answer no
+    /// and clicking an open menu's label would reopen it instead of toggling
+    /// it shut.
+    MenuBarClick { index: usize, was_active: bool },
+    /// A click on a dropdown row, named by its level and position.
+    MenuItemClick { depth: usize, index: usize },
+    /// Close the open menu (an outside click, or a click on an inert cell of
+    /// the dropdown's own box).
+    CloseMenu,
 }
 
 /// Which way a menu's highlight moves.

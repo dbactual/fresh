@@ -1155,13 +1155,62 @@ The parity sweep caught this, which is the argument for having built it:
 migrating the bar dropped region 2 from 8586 of its cases, silently, until the
 oracle said so.
 
+#### Menu pointer input, and the close guard
+
+`app/chrome/menu.rs` goes from 204 lines to 71 — `collect`, `hover`,
+`on_hover_change`, `on_pointer`, `handle_click_menu_bar` and
+`handle_click_menu_dropdown_surface` all deleted, along with
+`compute_menu_dropdown_hover` and the coordinate-driven
+`handle_menu_dropdown_click`. What is left is the layer entry and the keyboard
+grab.
+
+| Was | Is |
+|---|---|
+| `chrome:menu_bar` box at z120, hit-tested against `MenuLayout::menu_at` | the bar labels' own `on_click`, which already know which menu they open |
+| `chrome:menu_dropdown` box per level, plus `hit_test` → `(depth, index)` | each row's own `on_click`, which already knows its level and position |
+| a full-frame `chrome:menu_close_guard` box at z110 | `Dismiss::OUTSIDE_POINTER` on the outermost level |
+| `hover` + `on_hover_change` walking hover targets | each row's `on_enter`, feeding the *same* `menu_hover_reaction` |
+
+Three things are worth recording, because each is a rule the next surface will
+meet.
+
+**Modality is `None`, not `Exclusive`.** Clicking another bar label while a
+menu is open must close the first and open the second from one press — every
+platform does. An exclusive layer makes the bar underneath inert and costs the
+user a click. With `None` the dismissal fires first and the label's own click
+follows, so the pair reads "close this, open that".
+
+**Which makes the toggle a build-time fact.** Clicking the *open* menu's own
+label closes it. By the time the click lands, dismissal has already closed the
+menu, so asking "is this menu open?" answers no and reopens it — a toggle that
+never toggles. `MenuBarClick` therefore carries `was_active`, decided when the
+tree was built. This is the general shape: a handler that needs to know what
+was true *before* the event must close over it, because dismissal runs first.
+
+**A migrated surface claims the pointer over its own cells.** The hover target
+lives in one field (`mouse_state.hover_target`) that the legacy walk rewrites
+on every move. With the bar's chrome box deleted, that walk finds nothing there
+and clears what the tree just set. So the bar row and the dropdown boxes take
+`Move` — after which the legacy walk does not run for that event at all. Every
+background region that migrates will need the same, until the walk itself goes.
+
+`activate_menu_item(depth, index, menu)` is split out of the coordinate form: a
+row that answers its own click already knows which row it is, and should not
+have to hand back a cell for a hit-test to turn into the index it started from.
+
+One deliberate behaviour change: a **right**-click outside an open menu used to
+be swallowed by the guard box, which consumed any button. Dismissal fires for
+any button but claims only the primary one, so a right-click now closes the
+menu *and* goes on to open the context menu — the same ruling the context-menu
+wave made, for the same reason.
+
 #### Revised stages
 
 | Stage | What moves | Why here |
 |---|---|---|
 | **S1** | Frame skeleton: every region a `Host` leaf, painted by today's painters. Input fully delegated. | **Landed.** The frame's geometry is the shell's, the retained tree persists across frames, native items paint through the fold, and input is offered to the shell ahead of the legacy walk. Every region is still a `Host` leaf, so nothing has changed on screen — which is the point. Remaining before S3: threading real `BodyState`. |
 | **S2** | The live-derived regions — status bar, search-options row — become native descriptions. | Smallest possible first real swap; both already derive their geometry purely (§2.4). |
-| **S3** | Overlays become real `Layer`s: context menus → dropdowns/menu bar → popups → prompt/palette → modals. | The value stage. Each one deletes guard boxes, a rank entry, and a slice of the capture band. **Context menus: done** (below) — paint, pointer, dismissal, keyboard and geometry, with only the `blocks_terminal_input` rank entry left behind. **Menu bar: paint migrated** — the bar row is a native background region and the dropdown chain is a stack of layers; input and the close guard next. |
+| **S3** | Overlays become real `Layer`s: context menus → dropdowns/menu bar → popups → prompt/palette → modals. | The value stage. Each one deletes guard boxes, a rank entry, and a slice of the capture band. **Context menus: done** (below) — paint, pointer, dismissal, keyboard and geometry, with only the `blocks_terminal_input` rank entry left behind. **Menu bar: paint and pointer migrated** — the bar row is a native background region, the dropdown chain is a stack of layers, and the close guard is a dismissal property; only the keyboard grab and the rank entry remain. |
 | **S4** | Dock column, file explorer, plugin panels. | Depends on S3's layer semantics; carries the plugin API change. |
 | **S5** | Splits, tabs, scrollbars decompose; the buffer becomes the only `Host` leaf. | Requires the per-leaf `render_content` decision (§6.2); last because it is the only stage that touches the KEEP side. |
 

@@ -373,6 +373,59 @@ impl Editor {
                     tracing::warn!("context menu activation failed: {e}");
                 }
             }
+
+            UiFact::MenuHover(target) => {
+                // The tree says where the pointer is; the existing reaction
+                // says what the menu does about it. Both halves of the old
+                // walk, minus the walk.
+                let target = match target {
+                    // `MenuDropdownItem` names the menu it belongs to, and a
+                    // row cannot know that — the tree is built per frame while
+                    // the open menu changes under it. Fill it in here, where
+                    // the answer lives.
+                    Some(crate::app::types::HoverTarget::MenuDropdownItem(_, item)) => self
+                        .menu_state
+                        .active_menu
+                        .map(|m| crate::app::types::HoverTarget::MenuDropdownItem(m, item)),
+                    other => other,
+                };
+                self.active_window_mut().mouse_state.hover_target = target.clone();
+                self.menu_hover_reaction(target.as_ref());
+            }
+            UiFact::MenuBarClick { index, was_active } => {
+                if was_active {
+                    self.close_menu_with_auto_hide();
+                } else {
+                    self.active_window_mut().on_editor_focus_lost();
+                    self.menu_state.open_menu(index);
+                }
+            }
+            UiFact::MenuItemClick { depth, index } => {
+                let Some(active) = self.menu_state.active_menu else {
+                    return;
+                };
+                let menus: Vec<crate::config::Menu> = self
+                    .menus
+                    .menus
+                    .iter()
+                    .chain(self.menu_state.plugin_menus.iter())
+                    .cloned()
+                    .collect();
+                let Some(menu) = menus.get(active) else {
+                    return;
+                };
+                match self.activate_menu_item(depth, index, menu) {
+                    Ok(Err(e)) | Err(e) => {
+                        tracing::warn!("menu item activation failed: {e}")
+                    }
+                    Ok(Ok(())) => {}
+                }
+            }
+            UiFact::CloseMenu => {
+                if self.menu_state.active_menu.is_some() {
+                    self.close_menu_with_auto_hide();
+                }
+            }
         }
     }
 }

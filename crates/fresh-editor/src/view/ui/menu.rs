@@ -803,7 +803,11 @@ impl MenuRenderer {
             // The gap to the next label wears the bar's ground, not this
             // label's — `Span::raw` did that by carrying no style at all.
             runs.push((" ".to_string(), "menu.bar"));
-            bar.items.push(crate::view::shell::menu::BarItem { runs });
+            bar.items.push(crate::view::shell::menu::BarItem {
+                runs,
+                index: idx,
+                active: is_active,
+            });
 
             // Move to next position: label_width + 1 for trailing space
             current_x += label_width + 1;
