@@ -2203,7 +2203,7 @@ impl Editor {
     /// suggestions popup is up, whether the file-browser dialog is up,
     /// and whether the prompt line reserves its row. The paint-time
     /// `Layout` split (`render`), the event-time derivations
-    /// (`chrome_rows_now`, `status_bar_area_now`,
+    /// (`shell_frame`, `status_bar_area_now`,
     /// `search_options_layout_now`) all read THIS — these conditions
     /// used to be hand-copied at four sites, three of them outside the
     /// paint-vs-derived parity oracle's reach.
@@ -2239,7 +2239,7 @@ impl Editor {
     /// same description, so paint-time and event-time geometry cannot disagree
     /// — they are the same computation.
     ///
-    /// This replaced `chrome_rows_now`, which ran its own copy of the vertical
+    /// This replaced `shell_frame`, which ran its own copy of the vertical
     /// `Layout` split at event time. Two implementations of one layout is the
     /// condition this migration exists to remove.
     pub(crate) fn shell_frame(
@@ -2289,13 +2289,22 @@ impl Editor {
     }
 
     /// One region's rectangle THIS instant.
+    ///
+    /// Read off the retained tree — the layout the last frame produced — not
+    /// recomputed. Goal 5 of the library is that layout computes rectangles
+    /// and everything else *reads* them; building a throwaway `Ui` here would
+    /// be a second layout of the same tree, per query, several times per
+    /// pointer event, with all element state discarded.
     pub(crate) fn shell_region_now(
         &self,
         region: crate::view::shell::frame::HostRegion,
     ) -> ratatui::layout::Rect {
         let frame = self.active_chrome().last_frame;
         let size = ratatui::layout::Rect::new(0, 0, frame.width, frame.height);
-        crate::view::shell::frame::region_rects(self.shell_frame(size), size)
+        let Some(ui) = self.shell_ui.as_ref() else {
+            return ratatui::layout::Rect::default();
+        };
+        crate::view::shell::frame::regions_of(ui.spec(), size)
             .into_iter()
             .find(|(r, _)| *r == region)
             .map(|(_, rect)| rect)
@@ -2304,7 +2313,7 @@ impl Editor {
 
     /// The status bar's screen area THIS instant, derived from live state:
     /// the same visibility conditions and vertical frame split `render`
-    /// uses ([`Self::chrome_rows_now`]; asserted against the paint pass in
+    /// uses ([`Self::shell_frame`]; asserted against the paint pass in
     /// debug builds). `None` when the bar is hidden (toggled off, or a
     /// suggestions / file-browser popup takes the bottom rows) — gated on
     /// the CONDITIONS, not the chunk height: on a tiny terminal the paint

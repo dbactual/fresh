@@ -280,12 +280,14 @@ impl Editor {
         let Some(mut ui) = self.shell_ui.take() else {
             return false;
         };
-        let msgs = ui.dispatch(input);
+        let result = ui.dispatch(input);
         self.shell_ui = Some(ui);
-        if msgs.is_empty() {
-            return false;
-        }
-        for msg in msgs {
+        // Claimed is reported, not inferred. Producing a message and taking
+        // the event are different things: a hover moves a highlight without
+        // claiming the pointer, and a dismissal closes a menu while leaving a
+        // right-click to go on and open the next one.
+        let claimed = result.claimed;
+        for msg in result.msgs {
             match msg {
                 crate::view::shell::msg::UiMsg::Action(action) => {
                     // Straight into the pipeline that has always applied
@@ -295,7 +297,7 @@ impl Editor {
                 crate::view::shell::msg::UiMsg::Ui(fact) => self.apply_ui_fact(fact),
             }
         }
-        true
+        claimed
     }
 
     /// Apply a positional fact — the half of a message that never becomes a
@@ -303,8 +305,6 @@ impl Editor {
     fn apply_ui_fact(&mut self, fact: crate::view::shell::msg::UiFact) {
         use crate::view::shell::msg::UiFact;
         match fact {
-            // The surface swallowed the event and said so; nothing else to do.
-            UiFact::Consumed => {}
             UiFact::CloseContextMenu => {
                 self.active_window_mut().close_context_menus();
             }

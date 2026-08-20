@@ -74,11 +74,13 @@ impl Editor {
 
         let (is_double_click, is_triple_click) = self.detect_multi_click(&mouse_event, col, row);
 
-        // The shell sees the pointer before the chrome tree does — stage two
-        // of three, with the legacy modal-capture band still ahead of it and
-        // the existing walk still the floor. Inert while every region is a
-        // `Host` leaf: nothing in the tree claims, so the walk below runs on
-        // every event exactly as before.
+        // The shell sees the pointer before the chrome tree does. Surfaces
+        // that have migrated answer here — today the context menu — and the
+        // walk below is the floor for everything else. Whether the tree took
+        // the event is reported by `dispatch`, not inferred from whether it
+        // had anything to say: a hover moves a highlight without claiming, and
+        // a right-click outside a menu closes it while staying available to
+        // open the next one.
         if let Some(input) = crate::view::shell::input::mouse(mouse_event) {
             if self.shell_dispatch(input) {
                 return Ok(true);

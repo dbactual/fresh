@@ -25,22 +25,12 @@ pub enum UiMsg {
     /// A UI fact with no meaning outside this frame. Consumed where messages
     /// are applied and never serialized.
     ///
-    /// Empty until a surface needs one — the first will be click-to-byte, when
-    /// the buffer host takes its own clicks.
-    #[allow(dead_code)]
     Ui(UiFact),
 }
 
 /// The positional half: facts about *where*, which never become keybindings.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum UiFact {
-    /// The tree handled this event and the legacy path must not see it.
-    ///
-    /// Needed because claiming and *saying something* are separate in the
-    /// library: a handler stops propagation with `Event::stop`, which the
-    /// dispatcher has no way to report back. A surface that swallows an event
-    /// without otherwise acting says so with this.
-    Consumed,
     /// Dismiss the open context menu.
     CloseContextMenu,
     /// Move the open context menu's highlight to a row (hover).

@@ -4,12 +4,20 @@
 //! modality and its dismissal together, and if the model holds here the later
 //! surfaces apply the same mechanisms.
 //!
-//! This step moves **paint** only. The layer is anchored at the position the
-//! existing code already computed (`ContextMenu::clamped_position`) rather than
-//! letting `fit` place it, so the menu lands on exactly the cells it landed on
-//! before and the still-legacy hit-testing keeps agreeing with what is drawn.
-//! Input, dismissal and the guard box move next; that is when the old
-//! precedence entries can be deleted.
+//! Paint, pointer input and dismissal have all migrated: the rows answer the
+//! pointer, `Modality::Inert` does what the full-frame close-guard box did, and
+//! `OUTSIDE_POINTER` dismissal replaces the outside-click arm.
+//!
+//! The layer is still anchored at the position `ContextMenu::clamped_position`
+//! computes rather than letting `fit` place it. That was a bridge while
+//! hit-testing was still legacy; it no longer is, so `clamped_position` is now
+//! a second geometry authority kept alive by this one call. It should become
+//! `Anchor::Point(raw)` + `Fit::CLAMP` when the keyboard half lands and
+//! `layer_rank::CONTEXT_MENU` is deleted — that is the commit where its last
+//! caller goes away.
+//!
+//! The keyboard grab and that rank entry are what remain of the old
+//! implementation.
 
 use fresh_ui::{col, gesture, layer, text, Anchor, Dismiss, Modality, Node, Sizing};
 
@@ -90,12 +98,16 @@ pub fn context_menu(menu: &Menu) -> Node<UiMsg> {
                     .children(rows),
             )
             // A right-click inside an open menu is swallowed so the menu stays
-            // put rather than being re-opened or re-targeted. Claiming and
-            // reporting are separate in the library, so this says both.
-            .on_secondary_click(|e| {
-                e.stop();
-                UiMsg::Ui(UiFact::Consumed)
-            }),
+            // put rather than being re-opened or re-targeted. Stopping is the
+            // whole of it — the dispatcher reports the claim, so there is
+            // nothing to say.
+            .on(
+                fresh_ui::GestureKind::SecondaryClick,
+                std::rc::Rc::new(|e: &fresh_ui::Event| {
+                    e.stop();
+                    None
+                }),
+            ),
         )
 }
 
@@ -233,16 +245,21 @@ mod input_tests {
     /// helper that watched only one would miss half the behaviour.
     fn click(ui: &mut Ui<UiMsg>, x: i32, y: i32) -> Vec<UiMsg> {
         let pos = Point::new(x, y);
-        let mut out = ui.dispatch(Input::Press {
-            pos,
-            button: MouseButton::Left,
-            mods: Mods::NONE,
-        });
-        out.extend(ui.dispatch(Input::Release {
-            pos,
-            button: MouseButton::Left,
-            mods: Mods::NONE,
-        }));
+        let mut out = ui
+            .dispatch(Input::Press {
+                pos,
+                button: MouseButton::Left,
+                mods: Mods::NONE,
+            })
+            .msgs;
+        out.extend(
+            ui.dispatch(Input::Release {
+                pos,
+                button: MouseButton::Left,
+                mods: Mods::NONE,
+            })
+            .msgs,
+        );
         out
     }
 
@@ -293,10 +310,13 @@ mod input_tests {
     #[test]
     fn hovering_a_row_highlights_it() {
         let mut ui = open(20, 8);
-        let got = facts(ui.dispatch(Input::Move {
-            pos: Point::new(4, 3),
-            mods: Mods::NONE,
-        }));
+        let got = facts(
+            ui.dispatch(Input::Move {
+                pos: Point::new(4, 3),
+                mods: Mods::NONE,
+            })
+            .msgs,
+        );
         assert!(
             got.contains(&UiFact::HighlightContextMenuItem(1)),
             "got {got:?}"
@@ -309,17 +329,69 @@ mod input_tests {
     fn a_right_click_inside_is_swallowed() {
         let mut ui = open(20, 8);
         let pos = Point::new(4, 2);
-        let mut msgs = ui.dispatch(Input::Press {
+        // A right-click inside is claimed, and claiming is now what the
+        // dispatcher reports — there is no message to look for.
+        let press = ui.dispatch(Input::Press {
             pos,
             button: MouseButton::Right,
             mods: Mods::NONE,
         });
-        msgs.extend(ui.dispatch(Input::Release {
+        let release = ui.dispatch(Input::Release {
             pos,
             button: MouseButton::Right,
             mods: Mods::NONE,
-        }));
+        });
+        assert!(
+            release.claimed,
+            "the menu must swallow a right-click inside it"
+        );
+        let mut msgs = press.msgs;
+        msgs.extend(release.msgs);
         let got = facts(msgs);
-        assert!(got.contains(&UiFact::Consumed), "got {got:?}");
+        assert!(
+            got.is_empty(),
+            "swallowing needs no message now that claim is reported, got {got:?}"
+        );
+    }
+
+    /// **The regression this cost us.** A right-click outside an open menu
+    /// closes it *and* must go on to open the new one — every platform does
+    /// both from that one press. While claim was inferred from "did anything
+    /// say something", the dismissal message read as a claim and the second
+    /// half never happened: two right-clicks where one used to do.
+    ///
+    /// The library now dismisses for any button but claims only for the
+    /// primary one, so the press stays available to whatever opens the next
+    /// menu.
+    #[test]
+    fn a_right_click_outside_dismisses_without_swallowing_the_press() {
+        let mut ui = open(20, 8);
+        let outside = Point::new(18, 7);
+        let press = ui.dispatch(Input::Press {
+            pos: outside,
+            button: MouseButton::Right,
+            mods: Mods::NONE,
+        });
+        assert!(
+            facts(press.msgs.clone()).contains(&UiFact::CloseContextMenu),
+            "the menu must still close"
+        );
+        assert!(
+            !press.claimed,
+            "but the press must remain available to open the next menu"
+        );
+    }
+
+    /// A *left* click outside is spent closing the menu, and does claim — the
+    /// close-guard box consumed it too.
+    #[test]
+    fn a_left_click_outside_is_spent_closing_the_menu() {
+        let mut ui = open(20, 8);
+        let press = ui.dispatch(Input::Press {
+            pos: Point::new(18, 7),
+            button: MouseButton::Left,
+            mods: Mods::NONE,
+        });
+        assert!(press.claimed, "closing is the whole of a left click here");
     }
 }

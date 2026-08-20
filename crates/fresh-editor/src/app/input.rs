@@ -278,10 +278,10 @@ impl Editor {
             }
         }
 
-        // The migration shell is offered the key first. It declines
-        // everything today — no node in its tree carries a handler yet — so
-        // the walk below still sees every key. A surface starts answering its
-        // own keys the moment it stops being a `Host` leaf.
+        // The migration shell is offered the key first, and answers only for
+        // surfaces that have migrated their keyboard half — none yet, so the
+        // walk below still sees every key. `dispatch` reports whether the tree
+        // claimed it rather than the caller inferring it from the messages.
         if let Some(input) =
             crate::view::shell::input::key(&fresh_input_parser::KeyPress::new(key_event))
         {
