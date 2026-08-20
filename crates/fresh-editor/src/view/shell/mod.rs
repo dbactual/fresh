@@ -18,4 +18,5 @@ pub mod context_menu;
 pub mod fold;
 pub mod frame;
 pub mod input;
+pub mod menu;
 pub mod msg;

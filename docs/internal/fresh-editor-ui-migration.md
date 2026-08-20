@@ -1048,13 +1048,53 @@ once host leaves *declare* that they take raw input. Every region is a
 `PlainHost` today, so deriving it now would report the terminal blocked on
 every frame. It retires with the terminal grid's own host leaf (S5).
 
+#### Menu-bar dropdowns, paint
+
+The second overlay, and the first with real structure: a dropdown is a *chain*
+— the menu's own box plus one per open submenu level, each placed against the
+one before it. Each level is now a `Layer`, and the chain is the order they are
+declared in. That is the whole of "a submenu paints over the level it opened
+from"; the old renderer got the same result by painting in a loop, and a
+z-ordered scheme would have had to state it as a rule.
+
+The interesting work was not the tree. It was that the old dropdown decided
+three things in one pass and spelled two of them twice:
+
+- **`MenuRowStyle`** replaces two style ladders that had already drifted.
+  `build_dropdown_item_line` chose colours for the cells and
+  `record_dropdown_item_run` chose provenance keys for the theme inspector —
+  the same decision, written out separately, and the recorder's copy did not
+  know about hover, so it reported a hovered row as an ordinary one. There is
+  now one ladder with three renderings: `style()` for ratatui, `theme_keys()`
+  for the inspector, `shell_theme()` for the display list. The inspector's
+  hover bug goes with it.
+- **`dropdown_item_text`** is what a row *says*, separated from how it looks —
+  the padding, the checkbox glyph, the keybinding hint, the submenu arrow,
+  reproduced character for character because the row is what the cells contain.
+- **The walk publishes the description.** `MenuLayout` gains
+  `shell_dropdowns`: the same pass that decides each level's rectangle now also
+  says what its rows read, and the shell paints from that. Not a second
+  derivation of the menu — the only one.
+
+`render_dropdown_level` no longer writes a cell, so its `frame`, `theme` and
+`draw` parameters are gone, as is the ratatui `Paragraph`/`Block` that drew the
+box.
+
+**Paint only, deliberately.** The levels carry no modality, no dismissal and no
+handlers, and each is anchored at the rectangle `fit_dropdown_area` already
+chose. Pointer input still runs through `chrome::Menu`'s boxes and the
+full-frame `chrome:menu_close_guard`. That is the same three-step shape the
+context menus used — cells, then input, then let the layer's own `fit` decide
+placement — and it is what keeps the not-yet-migrated hit-testing agreeing with
+what is drawn.
+
 #### Revised stages
 
 | Stage | What moves | Why here |
 |---|---|---|
 | **S1** | Frame skeleton: every region a `Host` leaf, painted by today's painters. Input fully delegated. | **Landed.** The frame's geometry is the shell's, the retained tree persists across frames, native items paint through the fold, and input is offered to the shell ahead of the legacy walk. Every region is still a `Host` leaf, so nothing has changed on screen — which is the point. Remaining before S3: threading real `BodyState`. |
 | **S2** | The live-derived regions — status bar, search-options row — become native descriptions. | Smallest possible first real swap; both already derive their geometry purely (§2.4). |
-| **S3** | Overlays become real `Layer`s: context menus → dropdowns/menu bar → popups → prompt/palette → modals. | The value stage. Each one deletes guard boxes, a rank entry, and a slice of the capture band. **Context menus: done** (below) — paint, pointer, dismissal, keyboard and geometry, with only the `blocks_terminal_input` rank entry left behind. Menu bar dropdowns next. |
+| **S3** | Overlays become real `Layer`s: context menus → dropdowns/menu bar → popups → prompt/palette → modals. | The value stage. Each one deletes guard boxes, a rank entry, and a slice of the capture band. **Context menus: done** (below) — paint, pointer, dismissal, keyboard and geometry, with only the `blocks_terminal_input` rank entry left behind. **Menu-bar dropdowns: paint migrated**; input and the close guard next. |
 | **S4** | Dock column, file explorer, plugin panels. | Depends on S3's layer semantics; carries the plugin API change. |
 | **S5** | Splits, tabs, scrollbars decompose; the buffer becomes the only `Host` leaf. | Requires the per-leaf `render_content` decision (§6.2); last because it is the only stage that touches the KEEP side. |
 

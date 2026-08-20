@@ -177,6 +177,7 @@ fn combos() -> Vec<Frame> {
                             // The frame layout is the same with or without an
                             // overlay: a menu is a layer, out of flow.
                             menu: None,
+                            dropdowns: Vec::new(),
                         });
                     }
                 }
@@ -265,6 +266,7 @@ fn squeeze_band_starves_a_different_row_than_ratatui() {
         dock: None,
         explorer: None,
         menu: None,
+        dropdowns: Vec::new(),
     };
     let size = Rect {
         x: 0,

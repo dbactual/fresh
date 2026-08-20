@@ -2294,6 +2294,20 @@ impl Editor {
             dock: dock_area.map(|d| d.width),
             explorer: self.file_explorer_layout_request(chrome_area.width),
             menu: self.open_context_menu_for_shell(),
+            // From the same walk that decides the dropdowns' geometry, so the
+            // description and the rectangles the not-yet-migrated hit-testing
+            // uses cannot disagree — they are one computation.
+            // Gated on a menu actually being open: the walk expands every
+            // menu (config + plugin) and lays out the whole chain, which is
+            // pure waste on the frames where nothing is open — the same gate
+            // `chrome::Menu::collect` applies for the same reason.
+            dropdowns: if self.menu_state.active_menu.is_some() {
+                self.menu_layout_now()
+                    .map(|l| l.shell_dropdowns)
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            },
         }
     }
 

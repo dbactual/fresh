@@ -196,6 +196,11 @@ pub struct ShellPalette {
     menu_item: Style,
     menu_highlighted: Style,
     menu_border: Style,
+    menu_dropdown: Style,
+    menu_hover: Style,
+    menu_disabled: Style,
+    menu_info: Style,
+    menu_separator: Style,
 }
 
 impl crate::view::shell::fold::Palette for ShellPalette {
@@ -211,6 +216,14 @@ impl crate::view::shell::fold::Palette for ShellPalette {
             "menu.item" => self.menu_item,
             "menu.item.highlighted" => self.menu_highlighted,
             "menu.border" => self.menu_border,
+            // A menu-bar dropdown's box and the five ways one of its rows can
+            // look. The names are `MenuRowStyle`'s, one per style, so the
+            // ratatui painter's colours and the shell's cannot drift.
+            "menu.dropdown" => self.menu_dropdown,
+            "menu.item.hover" => self.menu_hover,
+            "menu.item.disabled" => self.menu_disabled,
+            "menu.item.info" => self.menu_info,
+            "menu.separator" => self.menu_separator,
             _ => self.base,
         }
     }
@@ -237,6 +250,15 @@ impl Editor {
             menu_border: Style::default()
                 .fg(theme.menu_border_fg)
                 .bg(theme.menu_dropdown_bg),
+            // The box: border ink on the dropdown ground. Its fill draws
+            // spaces, so only the background reaches the eye there.
+            menu_dropdown: Style::default()
+                .fg(theme.menu_border_fg)
+                .bg(theme.menu_dropdown_bg),
+            menu_hover: crate::view::ui::MenuRowStyle::Hovered.style(&theme),
+            menu_disabled: crate::view::ui::MenuRowStyle::Disabled.style(&theme),
+            menu_info: crate::view::ui::MenuRowStyle::Info.style(&theme),
+            menu_separator: crate::view::ui::MenuRowStyle::Separator.style(&theme),
         }
     }
 }
@@ -249,11 +271,10 @@ impl Editor {
     /// next, and the existing walk remains the floor. Returns whether the tree
     /// claimed it.
     ///
-    /// Today no node in the tree carries a handler — every region is a `Host`
-    /// leaf standing in for a painter that has not migrated — so this always
-    /// declines and every event reaches the legacy path exactly as before.
-    /// That is the point: the seam is in place and inert, and a surface starts
-    /// taking its own input the moment it stops being a `Host`.
+    /// Only migrated surfaces carry handlers — every region is still a `Host`
+    /// leaf standing in for a painter that has not moved — so anything the
+    /// tree declines reaches the legacy path exactly as before. A surface
+    /// starts taking its own input the moment it stops being a `Host`.
     pub(crate) fn shell_dispatch(&mut self, input: fresh_ui::Input) -> bool {
         let Some(mut ui) = self.shell_ui.take() else {
             return false;

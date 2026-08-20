@@ -76,6 +76,9 @@ pub struct Frame {
     /// tree rather than a separately-ranked surface — which is the whole point
     /// of moving them here.
     pub menu: Option<super::context_menu::Menu>,
+    /// The open menu-bar dropdown chain, outermost level first. Empty when no
+    /// menu is open.
+    pub dropdowns: Vec<super::menu::DropdownLevel>,
 }
 
 impl Default for Frame {
@@ -88,6 +91,7 @@ impl Default for Frame {
             dock: None,
             explorer: None,
             menu: None,
+            dropdowns: Vec::new(),
         }
     }
 }
@@ -159,6 +163,11 @@ pub fn frame_tree(f: Frame) -> Node<UiMsg> {
         region(HostRegion::Dock).w(Sizing::Cells(f.dock.unwrap_or(0))),
         chrome,
     ]);
+    // Overlays, in paint order. Menu-bar dropdowns first, then a context menu
+    // over them — the order `layer_rank::MENU` below `layer_rank::CONTEXT_MENU`
+    // states in the precedence table, expressed here as the order they are
+    // declared in.
+    let frame = frame.children(super::menu::dropdown_chain(&f.dropdowns));
     match &f.menu {
         Some(menu) => frame.child(super::context_menu::context_menu(menu)),
         None => frame,
