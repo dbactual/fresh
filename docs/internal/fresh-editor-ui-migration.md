@@ -1555,7 +1555,29 @@ list.
    mechanism before its first consumer is how unused abstractions get
    entrenched. It lands with the explorer's paint.
 
-3. **Inline styled text** (blocks M3/M5). Styled spans in
+3. **Placement offsets for anchored layers** (blocks the tail of M3). A
+   menu-bar dropdown chain places each level against the one before it, and a
+   submenu aligns its *first item* with the parent row it opened from — which
+   puts its box one row **above** that row, because the box has a border.
+   `Anchor::Node(key)` with `Place::RightOf` can name the parent, but there is
+   no way to say "and one row up", so the chain is still placed by
+   `MenuRenderer::fit_dropdown_area` rather than by the layers themselves.
+
+   Worth being precise about what that costs, because it is *not* the debt the
+   context menu had. `clamped_position` was a second derivation of the same
+   arithmetic and deleting it was pure subtraction. `fit_dropdown_area` runs
+   once and feeds all three consumers — the description, the web `Scene`'s
+   boxes, the theme recorder — so nothing here can drift. What remains is only
+   that the editor performs a placement the layer could declare.
+
+   The options: an offset on `Place` (small, and every anchored-chain surface
+   wants it), or keying each dropdown row and anchoring the submenu to its
+   parent row while changing the alignment rule by one cell (free, but it moves
+   pixels and `test_submenu_first_item_aligns_with_parent_item` says the
+   current rule is deliberate). The first is the answer; it is a base PR, and
+   it is not urgent, because there is no second authority waiting to drift.
+
+4. **Inline styled text** (blocks M3/M5). Styled spans in
    `TextProps`/`Draw::Lines` as a one-time library change, or one `TextRun`
    node per span editor-side (§4.2 note). Mnemonics, match highlights,
    markdown popups, and explorer git coloring all need it under a

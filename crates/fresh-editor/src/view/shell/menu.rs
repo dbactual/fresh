@@ -12,11 +12,18 @@
 //! `OUTSIDE_POINTER` dismissal is what the full-frame
 //! `chrome:menu_close_guard` box used to be.
 //!
-//! **Geometry has not migrated.** Each level is still anchored at the
-//! rectangle `MenuRenderer::fit_dropdown_area` chose, rather than letting the
-//! layer's own `fit` place it, because the keyboard half still hit-tests
-//! against that walk's output and the two must agree on where the box is.
-//! That is the last piece of this wave, along with `layer_rank::MENU`.
+//! **Placement has not migrated**, and it is not the same debt the context
+//! menu's was. There `clamped_position` was a second derivation of the same
+//! arithmetic, and deleting it was pure subtraction. Here `fit_dropdown_area`
+//! runs once and feeds all three consumers — this description, the web
+//! `Scene`'s boxes, and the theme recorder — so there is no duplicate
+//! authority, only a placement the editor performs that the layer could
+//! declare.
+//!
+//! Moving it needs something the library does not have. A submenu aligns its
+//! *first item* with the parent row it opened from, which puts its box one row
+//! above that row; `Anchor::Node` plus `Place::RightOf` can name the parent
+//! but not the offset. See §6.2 of the migration doc.
 
 use std::rc::Rc;
 
