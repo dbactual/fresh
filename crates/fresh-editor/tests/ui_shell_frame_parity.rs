@@ -11,9 +11,15 @@
 //! lost at step one.
 //!
 //! This test builds the frame skeleton both ways — as a `fresh-ui` description
-//! folded to `Draw::Host` items, and as the ratatui `Layout` calls `render.rs`
-//! actually makes — and compares the resulting rectangles over a sweep of
-//! terminal sizes and visibility combinations.
+//! folded to `Draw::Host` items, and as the ratatui `Layout` calls that
+//! `render.rs` used to make — and compares the resulting rectangles over a
+//! sweep of terminal sizes and visibility combinations.
+//!
+//! S1b deleted the production copy of that second computation, so `reference()`
+//! below is now the only one left: this is a golden of the layout the editor
+//! had, not a live cross-check against one it still runs. That is still worth
+//! keeping — it is what stops the shell's layout drifting from the behaviour
+//! users have — but it is a pin, not an oracle.
 //!
 //! Note what is deliberately *not* compared: the dock's bail-out rules
 //! (`EDITOR_MIN`/`DOCK_MIN`) are app logic keyed on the frame width, not a

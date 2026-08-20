@@ -1153,6 +1153,21 @@ The e2e suite (~315 files) is the primary mechanism, used as-is:
 5. **Two implementations of one surface must not persist across waves.** A wave
    that cannot delete its predecessor indicates a defect in the seam — fix the
    seam rather than accumulate a second UI stack.
+
+   **A wave may split by channel, and must say so.** That rule is about the
+   same behaviour existing twice, not about a surface having to migrate in one
+   step. Paint, pointer, keyboard and modality can move separately — the
+   context menu moved paint, then pointer, and still has its keyboard grab and
+   its `layer_rank` entry — and that is legitimate *provided each channel has
+   exactly one implementation at every moment*. The menu's pointer input lives
+   in the tree and nowhere else; its keyboard grab lives in the chrome
+   component and nowhere else.
+
+   The cost is a surface spread across three files mid-wave, which is only
+   tolerable while it is *visibly* mid-wave. So a split wave names, in the
+   surface's own module doc, which channels have moved and which have not —
+   `view/shell/context_menu.rs` does — and the wave is not finished until the
+   last channel lands and the old file is deleted.
 6. **The caret and the caret-anchored popups are the subtle seam.** Get the M0
    caret arbitration and geometry-cache bridge right, or M4/M5 popups mis-anchor.
 
@@ -1208,6 +1223,19 @@ list.
 
 ### 6.2 Open decisions — settle each before the wave it blocks
 
+0. ~~**How does the editor learn the tree claimed an event?**~~ — **decided,
+   and it was the review's finding rather than the plan's.** The seam's
+   contract was briefly carried in the message channel: `shell_dispatch` read
+   "claimed" off "did any message come back", and a `UiFact::Consumed` message
+   existed to mean "there is no message". That produced a real bug (a
+   right-click outside a menu closed it and then failed to open the next one)
+   and silently swallowed hover from the legacy trackers.
+
+   `fresh-ui` reports it now — `Dispatch { msgs, claimed }` — which the
+   library's own gap rule required, since `propagate_all` already computed it
+   and threw it away. **The general lesson: when the editor finds itself
+   inferring something about routing, that is a missing library capability, not
+   a place for an editor convention.**
 0. **Migrate in paint order** — **decided**. There is one fold and it runs
    after every legacy painter, so anything native paints above everything that
    has not migrated. `fold` interleaves correctly *within* the display list but

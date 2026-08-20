@@ -53,6 +53,7 @@ fn row_label(label: &str, width: u16) -> String {
 /// they are declared properties of the layer, which is the whole argument for
 /// moving overlays into the tree.
 pub fn context_menu(menu: &Menu) -> Node<UiMsg> {
+    let highlighted = menu.highlighted;
     let rows: Vec<Node<UiMsg>> = menu
         .items
         .iter()
@@ -71,8 +72,12 @@ pub fn context_menu(menu: &Menu) -> Node<UiMsg> {
             // A click moves the highlight and activates, exactly as the old
             // click handler did — activation runs the same path Enter does.
             .on_click(move |_| UiMsg::Ui(UiFact::ActivateContextMenuItem(i)))
+            // Only when it actually moves. The handler that this replaced
+            // gated on `core.highlighted != idx`; without the same gate every
+            // pointer move over the row it is already on reports a change and
+            // marks the tree dirty.
             .on_enter(std::rc::Rc::new(move |_: &fresh_ui::Event| {
-                Some(UiMsg::Ui(UiFact::HighlightContextMenuItem(i)))
+                (i != highlighted).then_some(UiMsg::Ui(UiFact::HighlightContextMenuItem(i)))
             }))
         })
         .collect();
@@ -321,6 +326,24 @@ mod input_tests {
             got.contains(&UiFact::HighlightContextMenuItem(1)),
             "got {got:?}"
         );
+    }
+
+    /// Hovering the row that is *already* highlighted says nothing. The
+    /// handler this replaced gated on the same condition; without it, every
+    /// pointer move over the current row reports a change and marks the tree
+    /// dirty.
+    #[test]
+    fn hovering_the_current_row_reports_nothing() {
+        let mut ui = open(20, 8);
+        // Row 0 is highlighted to begin with, and sits at y+1 past the border.
+        let got = facts(
+            ui.dispatch(Input::Move {
+                pos: Point::new(4, 2),
+                mods: Mods::NONE,
+            })
+            .msgs,
+        );
+        assert!(got.is_empty(), "no change, so nothing to report: {got:?}");
     }
 
     /// A right-click inside is swallowed so the menu stays put rather than

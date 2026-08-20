@@ -981,7 +981,21 @@ impl Editor {
                 .shell_ui
                 .take()
                 .expect("the shell tree is taken and returned within one frame");
-            crate::view::shell::fold::fold_native(ui.spec(), frame.buffer_mut(), &palette);
+            let shell_caret =
+                crate::view::shell::fold::fold_native(ui.spec(), frame.buffer_mut(), &palette);
+            // A native widget that places a cursor (a focused `TextField`)
+            // wins over the buffer's, which is the rule §4.4 states and the
+            // behaviour `cursor_suppressed_by_late_overlay` encodes by hand.
+            // No migrated surface places one yet, so this is `None` on every
+            // frame today — but taking it and asserting that is how it stays
+            // true, rather than being silently dropped until the first field
+            // migrates and nobody notices it has no caret.
+            debug_assert!(
+                shell_caret.is_none(),
+                "a migrated surface placed a caret ({shell_caret:?}); wire it \
+                 into the end-of-frame cursor commit before relying on it"
+            );
+            let _ = shell_caret;
             self.shell_ui = Some(ui);
         }
 

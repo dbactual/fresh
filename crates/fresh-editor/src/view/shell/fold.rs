@@ -148,7 +148,13 @@ pub fn fold(
             // A hint about where selecting text is meaningful; nothing to draw.
             Draw::Selectable => {}
             Draw::Host(id) => {
-                if let Some(region) = HostRegion::from_host_id(*id) {
+                let region = HostRegion::from_host_id(*id);
+                debug_assert!(
+                    region.is_some(),
+                    "a host id with no region: {id:?} would paint nothing, in \
+                     silence"
+                );
+                if let Some(region) = region {
                     // Clipped to the frame, so a host never paints outside it.
                     let area = intersect(rect, clip);
                     if area.width > 0 && area.height > 0 {

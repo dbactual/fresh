@@ -189,10 +189,10 @@ impl Editor {
         // suggestions dropdown, the theme-info popup) must take the
         // event in the walk — forwarding it would inject mouse codes
         // into the PTY *through* the popup. This replaces growing the
-        // hand list one surface at a time; the context-menu check
-        // above stays NAMED by ruling because its boxes are
-        // deliberately not opaque (its close-guard backdrop owns
-        // outside clicks), so opacity cannot express it.
+        // hand list one surface at a time; the context-menu check above
+        // stays NAMED by ruling because the menu contributes no chrome
+        // boxes at all any more — it is a `Layer` in the shell's tree,
+        // whose modality is not visible to this walk's opacity test.
         // ONE tree per event, built AFTER the pre-band observers above
         // (the LSP-rename cancel can close a prompt, which changes the
         // geometry) and shared by the forward gate and every dispatch
