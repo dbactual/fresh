@@ -1211,7 +1211,7 @@ wave made, for the same reason.
 | **S1** | Frame skeleton: every region a `Host` leaf, painted by today's painters. Input fully delegated. | **Landed.** The frame's geometry is the shell's, the retained tree persists across frames, native items paint through the fold, and input is offered to the shell ahead of the legacy walk. Every region is still a `Host` leaf, so nothing has changed on screen — which is the point. Remaining before S3: threading real `BodyState`. |
 | **S2** | The live-derived regions — status bar, search-options row — become native descriptions. | Smallest possible first real swap; both already derive their geometry purely (§2.4). |
 | **S3** | Overlays become real `Layer`s: context menus → dropdowns/menu bar → popups → prompt/palette → modals. | The value stage. Each one deletes guard boxes, a rank entry, and a slice of the capture band. **Context menus: done** (below) — paint, pointer, dismissal, keyboard and geometry, with only the `blocks_terminal_input` rank entry left behind. **Menu bar: paint and pointer migrated** — the bar row is a native background region, the dropdown chain is a stack of layers, and the close guard is a dismissal property; only the keyboard grab and the rank entry remain. |
-| **S4** | Dock column, file explorer, plugin panels. | Depends on S3's layer semantics; carries the plugin API change. |
+| **S4** | Dock column, file explorer, plugin panels. | No longer waits on S3: the two-pass fold means a background region can migrate while the overlays above it have not. What it *does* wait on is §6.2's "colour that is not a theme name" — the explorer's slots and the panels' widgets both carry plugin-supplied colours, which a `ThemeKey` cannot name. The plugin API change (keyed `List`/`Tree` items) is deprecated ahead of it, so its release cycle runs in parallel rather than in series. |
 | **S5** | Splits, tabs, scrollbars decompose; the buffer becomes the only `Host` leaf. | Requires the per-leaf `render_content` decision (§6.2); last because it is the only stage that touches the KEEP side. |
 
 ### 5.1 M0 — the seam (a genuine prototype, not just plumbing)
@@ -1434,22 +1434,58 @@ list.
    and threw it away. **The general lesson: when the editor finds itself
    inferring something about routing, that is a missing library capability, not
    a place for an editor convention.**
-0. **Migrate in paint order** — **decided**. There is one fold and it runs
-   after every legacy painter, so anything native paints above everything that
-   has not migrated. `fold` interleaves correctly *within* the display list but
-   cannot across the seam, because the legacy painters are not in it. So a
-   region may become native only once everything that paints over it already
-   has: top-down through the old paint order, overlays first. The failure is
-   silent — the status bar is next and popups paint over its row — so the rule
-   is recorded on `fold_native` where the next person will meet it. Splitting
-   the fold into passes keyed to the legacy z-bands is the fallback if the
-   order ever becomes impractical.
+0. ~~**Migrate in paint order**~~ — **superseded.** The rule was: one fold,
+   running after every legacy painter, so a region may become native only once
+   everything that paints over it already has. It was the migration's real
+   ordering constraint and it was stricter than it looked — the file explorer
+   paints *first* among the legacy painters, so under one fold it could not
+   migrate until nearly everything else had.
+
+   The fold is two passes now, `Background` before every legacy painter and
+   `Overlay` after all of them, so each band lands where its surface belongs
+   and the ordering rule retires. What replaces it is a much weaker one: a
+   surface must name the band it belongs to, and a `Layer` is an overlay while
+   anything in flow is background. Getting *that* wrong is still silent, so
+   `frame::OVERLAY_FAMILIES` is checked by a test.
 1. ~~**The fold-callback API**~~ — **prototyped** (§5.0). `HostPainter` +
    `impl HostPainter for Editor`; paint order, clipping, the caret rule and the
    borrow are covered by tests. What remains is threading real per-frame state
    and publishing `BodyOutput` to the geometry bridge — mechanical S1 work. The
    `Ui`-beside-`Editor` constraint it revealed is recorded in §4.4.
-2. **Inline styled text** (blocks M3/M5). Styled spans in
+2. **Colour that is not a theme name** (blocks S4 — the file explorer — and
+   M6, and the status bar's plugin tokens). An `Item` carries one `ThemeKey`: a
+   *name* for where its appearance comes from, which the backend resolves. That
+   is the right model for everything migrated so far, because every colour so
+   far came from a theme slot.
+
+   The file explorer breaks it. `ExplorerSlotPayload::fg` and
+   `name_color_hint` are `ratatui::Color` values **supplied by plugins** — a
+   badge tinted by a linter, a filename coloured by a git-status provider.
+   There is no theme slot to name, and the set is not known until the frame is
+   built. The same vocabulary reappears in plugin panels (M6) and in the status
+   bar's plugin tokens, so this is not one surface's quirk.
+
+   Three ways out, in order of preference:
+
+   - **Per-frame minted names.** `ThemeKey` is an opaque string the library
+     never interprets, and the palette is ours. Intern each dynamic style as
+     the description is built, name it `dyn:N`, and carry the table beside the
+     palette snapshot — which is built per frame from the same editor state.
+     No library change, the description still carries only names, and the
+     mapping stays where the design puts it: in the backend. The table lives
+     next to the palette rather than in `Frame`, so the description never holds
+     a `ratatui::Style`.
+   - **A colour variant on `ThemeKey`.** Honest, but it puts appearance in the
+     display list and every backend then has to understand a colour model —
+     the web frontend included.
+   - **Keep those rows behind a `Host` leaf.** Cheap, but it splits the
+     explorer down the middle and defeats the point of migrating it.
+
+   The first is the intended answer; it is not built, because building a
+   mechanism before its first consumer is how unused abstractions get
+   entrenched. It lands with the explorer's paint.
+
+3. **Inline styled text** (blocks M3/M5). Styled spans in
    `TextProps`/`Draw::Lines` as a one-time library change, or one `TextRun`
    node per span editor-side (§4.2 note). Mnemonics, match highlights,
    markdown popups, and explorer git coloring all need it under a
