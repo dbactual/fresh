@@ -189,7 +189,7 @@ impl crate::view::shell::fold::HostPainter for Editor {
 #[allow(dead_code)]
 fn _the_ui_must_not_live_on_the_editor(
     editor: &mut Editor,
-    ui: &mut fresh_ui::Ui<()>,
+    ui: &mut fresh_ui::Ui<crate::view::shell::msg::UiMsg>,
     buf: &mut Buffer,
     frame: crate::view::shell::frame::Frame,
 ) {
@@ -292,9 +292,38 @@ impl Editor {
                     // actions; nothing about it changes.
                     let _ = self.handle_action(action);
                 }
-                crate::view::shell::msg::UiMsg::Ui(_) => {}
+                crate::view::shell::msg::UiMsg::Ui(fact) => self.apply_ui_fact(fact),
             }
         }
         true
+    }
+
+    /// Apply a positional fact — the half of a message that never becomes a
+    /// keybinding.
+    fn apply_ui_fact(&mut self, fact: crate::view::shell::msg::UiFact) {
+        use crate::view::shell::msg::UiFact;
+        match fact {
+            // The surface swallowed the event and said so; nothing else to do.
+            UiFact::Consumed => {}
+            UiFact::CloseContextMenu => {
+                self.active_window_mut().close_context_menus();
+            }
+            UiFact::HighlightContextMenuItem(idx) => {
+                if let Some(core) = self.active_window_mut().context_menu_core_mut() {
+                    core.highlighted = idx;
+                }
+            }
+            UiFact::ActivateContextMenuItem(idx) => {
+                // The same two steps the old click handler took: move the
+                // highlight, then activate through the path Enter uses.
+                let Some((kind, _)) = self.active_window().open_context_menu() else {
+                    return;
+                };
+                if let Some(core) = self.active_window_mut().context_menu_core_mut() {
+                    core.highlighted = idx;
+                }
+                let _ = self.activate_highlighted_context_menu(kind);
+            }
+        }
     }
 }

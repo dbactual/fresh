@@ -10,6 +10,8 @@
 
 use fresh_ui::{col, host, row, HostId, Node, Sizing};
 
+use super::msg::UiMsg;
+
 /// A region of the frame the host still paints itself.
 ///
 /// The discriminants are the `HostId` values carried in `Draw::Host`, so the
@@ -128,9 +130,9 @@ impl Frame {
 /// position and callers use it — the suggestions popup anchors to the prompt
 /// row whether or not that row is drawn — so omitting it would silently move
 /// whatever hangs off it.
-pub fn frame_tree<M: 'static>(f: Frame) -> Node<M> {
+pub fn frame_tree(f: Frame) -> Node<UiMsg> {
     let cells = |on: bool| Sizing::Cells(on as u16);
-    let body = match f.explorer {
+    let body: Node<UiMsg> = match f.explorer {
         Some((cols, true)) => row().flex(1).children([
             region(HostRegion::Explorer).w(Sizing::Cells(cols)),
             region(HostRegion::Body).flex(1),
@@ -163,7 +165,7 @@ pub fn frame_tree<M: 'static>(f: Frame) -> Node<M> {
     }
 }
 
-fn region<M: 'static>(r: HostRegion) -> Node<M> {
+fn region(r: HostRegion) -> Node<UiMsg> {
     host(r.id())
 }
 
@@ -212,7 +214,7 @@ pub fn region_rects(
 ) -> Vec<(HostRegion, ratatui::layout::Rect)> {
     use fresh_ui::{Size, Ui};
 
-    let mut ui: Ui<()> = Ui::new();
+    let mut ui: Ui<UiMsg> = Ui::new();
     let spec = ui.frame(frame_tree(f), Size::new(size.width, size.height));
     regions_of(spec, size)
 }

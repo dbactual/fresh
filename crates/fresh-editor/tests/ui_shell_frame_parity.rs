@@ -33,7 +33,7 @@ fn id(r: HostRegion) -> u64 {
 /// shape the real backend callback takes — `(HostId, rect)` is exactly what a
 /// region painter needs.
 fn fold(f: Frame, size: Rect) -> Vec<(u64, Rect)> {
-    let mut ui: Ui<()> = Ui::new();
+    let mut ui: Ui<fresh::view::shell::msg::UiMsg> = Ui::new();
     let spec = ui.frame(frame_tree(f), Size::new(size.width, size.height));
     let mut out: Vec<(u64, Rect)> = spec
         .items

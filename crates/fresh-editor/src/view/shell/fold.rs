@@ -279,6 +279,19 @@ mod tests {
         Style::default()
     }
 
+    fn run_msg(
+        root: Node<crate::view::shell::msg::UiMsg>,
+        w: u16,
+        h: u16,
+        rec: &mut Recorder,
+    ) -> (Buffer, Caret) {
+        let mut ui: Ui<crate::view::shell::msg::UiMsg> = Ui::new();
+        let spec = ui.frame(root, Size::new(w, h)).clone();
+        let mut buf = Buffer::empty(Rect::new(0, 0, w, h));
+        let caret = fold(&spec, &mut buf, &plain, rec);
+        (buf, caret)
+    }
+
     fn run(root: Node<()>, w: u16, h: u16, rec: &mut Recorder) -> (Buffer, Caret) {
         let mut ui: Ui<()> = Ui::new();
         let spec = ui.frame(root, Size::new(w, h)).clone();
@@ -302,7 +315,7 @@ mod tests {
             ..Frame::default()
         };
         let mut rec = Recorder::default();
-        let (buf, _) = run(frame_tree(f), 10, 4, &mut rec);
+        let (buf, _) = run_msg(frame_tree(f), 10, 4, &mut rec);
 
         let mut got: Vec<_> = rec.calls.iter().map(|(r, _)| *r).collect();
         got.sort();
@@ -357,7 +370,7 @@ mod tests {
             ..Frame::default()
         };
         let mut rec = Recorder::default();
-        let (buf, _) = run(frame_tree(f), 8, 2, &mut rec);
+        let (buf, _) = run_msg(frame_tree(f), 8, 2, &mut rec);
         for (region, rect) in &rec.calls {
             assert!(
                 rect.x + rect.width <= buf.area.width && rect.y + rect.height <= buf.area.height,
@@ -373,7 +386,7 @@ mod tests {
     fn a_host_region_can_own_the_caret() {
         let mut rec = Recorder::default();
         rec.caret_at = Some((HostRegion::Body, 3, 1));
-        let (_, caret) = run(frame_tree(Frame::default()), 10, 4, &mut rec);
+        let (_, caret) = run_msg(frame_tree(Frame::default()), 10, 4, &mut rec);
         assert_eq!(caret, Some((3, 1)));
     }
 
@@ -413,7 +426,7 @@ mod tests {
             }
         }
 
-        let mut ui: Ui<()> = Ui::new();
+        let mut ui: Ui<crate::view::shell::msg::UiMsg> = Ui::new();
         let mut host_state = Host { painted: 0 };
         let mut buf = Buffer::empty(Rect::new(0, 0, 10, 4));
 
@@ -441,7 +454,7 @@ mod native_tests {
     /// and each region's existing painter keeps producing exactly what it did.
     #[test]
     fn a_frame_of_host_regions_paints_nothing() {
-        let mut ui: Ui<()> = Ui::new();
+        let mut ui: Ui<crate::view::shell::msg::UiMsg> = Ui::new();
         let spec = ui
             .frame(frame_tree(Frame::default()), Size::new(20, 6))
             .clone();

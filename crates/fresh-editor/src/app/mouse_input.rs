@@ -171,12 +171,12 @@ impl Editor {
         // this gate the terminal-forward path below would swallow clicks/moves
         // aimed at the menu, so menu items couldn't be selected (they'd inject
         // mouse escape codes into the PTY instead). Skipping forwarding lets
-        // the event fall through to the normal pipeline, where
-        // `handle_click_context_menus` (select / dismiss) and the hover
-        // hit-test (highlight-follows-pointer) already handle it. The menu's
-        // precedence itself lives in the chrome walk/capture ordering (its
-        // boxes ride the top routable band); this fork only keeps the PTY
-        // from swallowing the events first.
+        // the event fall through, where the shell's context-menu `Layer`
+        // handles it: its rows take the click and the hover, and its
+        // `Modality::Inert` plus `OUTSIDE_POINTER` dismissal cover everything
+        // outside. That layer is offered the pointer before this walk, so its
+        // precedence is tree position rather than a band — this fork only
+        // keeps the PTY from swallowing the events before either sees them.
         let context_menu_open = self.active_window().context_menu_core().is_some();
         // DERIVED suppression for everything with opaque geometry: a
         // pointer-opaque chrome box over the cell (an info popup, the

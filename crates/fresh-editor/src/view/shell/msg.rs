@@ -32,12 +32,21 @@ pub enum UiMsg {
 }
 
 /// The positional half: facts about *where*, which never become keybindings.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum UiFact {
-    /// Placeholder so the enum is not empty while the first real variant is
-    /// still on the legacy path. Never constructed.
-    #[allow(dead_code)]
-    None,
+    /// The tree handled this event and the legacy path must not see it.
+    ///
+    /// Needed because claiming and *saying something* are separate in the
+    /// library: a handler stops propagation with `Event::stop`, which the
+    /// dispatcher has no way to report back. A surface that swallows an event
+    /// without otherwise acting says so with this.
+    Consumed,
+    /// Dismiss the open context menu.
+    CloseContextMenu,
+    /// Move the open context menu's highlight to a row (hover).
+    HighlightContextMenuItem(usize),
+    /// Activate a row — the same path a keyboard Enter takes.
+    ActivateContextMenuItem(usize),
 }
 
 impl From<Action> for UiMsg {

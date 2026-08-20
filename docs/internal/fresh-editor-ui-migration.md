@@ -981,9 +981,30 @@ so layout still runs early (the regions need rectangles) and paint now runs
 where the context-menu paint used to be. Paint order is what puts a menu on
 top.
 
-`render_context_menus` and `render_context_menu` are deleted. Input,
-dismissal, the close-guard box and the rank entry are the next step — that is
-where `Modality::Inert` replaces the guard box and the precedence entry goes.
+`render_context_menus` and `render_context_menu` are deleted.
+
+**Pointer input and dismissal, migrated.** This is the first place the
+migration's central claim pays out: behaviour that was *written down* becomes
+behaviour that is *declared*.
+
+| Was | Is |
+|---|---|
+| a full-frame `chrome:context_menu_close_guard` box, pushed at z180, with a pointer arm that dismissed and consumed | `Modality::Inert` on the layer — everything outside is non-interactive because the layer says so |
+| a `chrome:context_menu` box plus `handle_click_context_menus`, hit-testing the pointer against the menu's rect to decide activate / dismiss / inert-border | the rows' own `on_click`, and `Dismiss::OUTSIDE_POINTER` for everything else |
+| `hover` + `on_hover_change`, walking hover targets to produce `HoverTarget::ContextMenuItem` and feed the highlight back | the rows' own `on_enter` |
+| a "right-click inside an open menu" arm, so the menu is not re-opened or re-targeted | `on_secondary_click` that stops propagation |
+
+`app/chrome/context_menu.rs` loses 138 lines: its `collect` is now empty, and
+`on_pointer`, `hover`, `on_hover_change` and `handle_click_context_menus` are
+gone. The keyboard grab and the `layer_rank::CONTEXT_MENU` entry remain — the
+rank entry also declares `blocks_terminal_input`, which the PTY gate reads, so
+retiring it means bridging that to the layer's own modality. That is the next
+step and the first real deletion from the precedence table.
+
+**One thing worth recording**, because it decides parity: dismissal is
+evaluated on the **press**, not the release (`hit.rs`'s `Input::Press` arm),
+which is exactly when the close-guard box dismissed too. A first version of the
+test watched only the release and saw nothing.
 
 #### Revised stages
 

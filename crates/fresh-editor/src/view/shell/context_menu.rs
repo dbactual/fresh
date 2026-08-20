@@ -11,7 +11,9 @@
 //! Input, dismissal and the guard box move next; that is when the old
 //! precedence entries can be deleted.
 
-use fresh_ui::{col, layer, text, Anchor, Modality, Node, Sizing};
+use fresh_ui::{col, gesture, layer, text, Anchor, Dismiss, Modality, Node, Sizing};
+
+use super::msg::{UiFact, UiMsg};
 
 /// What one menu needs to draw: where it goes, what is in it, and which row is
 /// highlighted.
@@ -35,8 +37,15 @@ fn row_label(label: &str, width: u16) -> String {
 }
 
 /// One menu, as a description.
-pub fn context_menu<M: 'static>(menu: &Menu) -> Node<M> {
-    let rows: Vec<Node<M>> = menu
+///
+/// The rows answer the pointer themselves, and the layer's own properties do
+/// what a full-frame guard box used to: `Modality::Inert` makes everything
+/// outside non-interactive, and `OUTSIDE_POINTER` dismissal turns a click out
+/// there into a close. Neither is a rule anyone wrote down for this surface —
+/// they are declared properties of the layer, which is the whole argument for
+/// moving overlays into the tree.
+pub fn context_menu(menu: &Menu) -> Node<UiMsg> {
+    let rows: Vec<Node<UiMsg>> = menu
         .items
         .iter()
         .enumerate()
@@ -46,9 +55,17 @@ pub fn context_menu<M: 'static>(menu: &Menu) -> Node<M> {
             } else {
                 "menu.item"
             };
-            text(row_label(label, menu.width))
-                .theme(theme)
-                .h(Sizing::Cells(1))
+            gesture(
+                text(row_label(label, menu.width))
+                    .theme(theme)
+                    .h(Sizing::Cells(1)),
+            )
+            // A click moves the highlight and activates, exactly as the old
+            // click handler did — activation runs the same path Enter does.
+            .on_click(move |_| UiMsg::Ui(UiFact::ActivateContextMenuItem(i)))
+            .on_enter(std::rc::Rc::new(move |_: &fresh_ui::Event| {
+                Some(UiMsg::Ui(UiFact::HighlightContextMenuItem(i)))
+            }))
         })
         .collect();
 
@@ -57,15 +74,28 @@ pub fn context_menu<M: 'static>(menu: &Menu) -> Node<M> {
         // The point the old code clamped to, not a fresh placement: the menu
         // must land where hit-testing still expects it.
         .anchor(Anchor::Point(menu.x, menu.y))
-        // Paint-only for now — the legacy path still routes input, so claiming
-        // it here would take events away from the code that still handles them.
-        .modality(Modality::None)
+        // Everything outside is non-interactive while the menu is up. This is
+        // the full-frame close-guard box, expressed as a property.
+        .modality(Modality::Inert)
+        // Escape stays with the legacy key handler for now, so only the
+        // pointer half is declared here.
+        .dismiss(Dismiss::OUTSIDE_POINTER)
+        .on_dismiss(|_| UiMsg::Ui(UiFact::CloseContextMenu))
         .child(
-            col()
-                .border()
-                .theme("menu")
-                .w(Sizing::Cells(menu.width))
-                .children(rows),
+            gesture(
+                col()
+                    .border()
+                    .theme("menu")
+                    .w(Sizing::Cells(menu.width))
+                    .children(rows),
+            )
+            // A right-click inside an open menu is swallowed so the menu stays
+            // put rather than being re-opened or re-targeted. Claiming and
+            // reporting are separate in the library, so this says both.
+            .on_secondary_click(|e| {
+                e.stop();
+                UiMsg::Ui(UiFact::Consumed)
+            }),
         )
 }
 
@@ -105,7 +135,7 @@ mod paint_tests {
     }
 
     fn render(menu: Menu, w: u16, h: u16) -> Buffer {
-        let mut ui: Ui<()> = Ui::new();
+        let mut ui: Ui<UiMsg> = Ui::new();
         let frame = Frame {
             menu: Some(menu),
             ..Frame::default()
@@ -167,5 +197,129 @@ mod paint_tests {
             let b = with.iter().find(|(r, _)| *r == region).unwrap().1;
             assert_eq!(a, b, "{region:?} moved when a menu opened");
         }
+    }
+}
+
+#[cfg(test)]
+mod input_tests {
+    use super::*;
+    use crate::view::shell::frame::{frame_tree, Frame};
+    use fresh_ui::{Input, Mods, MouseButton, Point, Size, Ui};
+
+    fn menu() -> Menu {
+        Menu {
+            x: 2,
+            y: 1,
+            width: 10,
+            highlighted: 0,
+            items: vec!["Copy".into(), "Paste".into()],
+        }
+    }
+
+    fn open(w: u16, h: u16) -> Ui<UiMsg> {
+        let mut ui: Ui<UiMsg> = Ui::new();
+        ui.frame(
+            frame_tree(Frame {
+                menu: Some(menu()),
+                ..Frame::default()
+            }),
+            Size::new(w, h),
+        );
+        ui
+    }
+
+    /// Both halves of the click. Dismissal is evaluated on the *press* (as the
+    /// close-guard box also was) while activation lands on the release, so a
+    /// helper that watched only one would miss half the behaviour.
+    fn click(ui: &mut Ui<UiMsg>, x: i32, y: i32) -> Vec<UiMsg> {
+        let pos = Point::new(x, y);
+        let mut out = ui.dispatch(Input::Press {
+            pos,
+            button: MouseButton::Left,
+            mods: Mods::NONE,
+        });
+        out.extend(ui.dispatch(Input::Release {
+            pos,
+            button: MouseButton::Left,
+            mods: Mods::NONE,
+        }));
+        out
+    }
+
+    fn facts(msgs: Vec<UiMsg>) -> Vec<UiFact> {
+        msgs.into_iter()
+            .map(|m| match m {
+                UiMsg::Ui(f) => f,
+                other => panic!("unexpected message {other:?}"),
+            })
+            .collect()
+    }
+
+    /// Clicking a row activates it, and the row it names is the row under the
+    /// pointer — the box's border is one cell, so the first item is at y+1.
+    #[test]
+    fn clicking_a_row_activates_that_row() {
+        let mut ui = open(20, 8);
+        let got = facts(click(&mut ui, 4, 2));
+        assert!(
+            matches!(got.as_slice(), [UiFact::ActivateContextMenuItem(0)]),
+            "got {got:?}"
+        );
+
+        let mut ui = open(20, 8);
+        let got = facts(click(&mut ui, 4, 3));
+        assert!(
+            matches!(got.as_slice(), [UiFact::ActivateContextMenuItem(1)]),
+            "got {got:?}"
+        );
+    }
+
+    /// **The close-guard box, replaced by a property.** A click outside the
+    /// menu dismisses it — declared as `OUTSIDE_POINTER` on the layer rather
+    /// than simulated with a full-frame box that has to be pushed, ranked and
+    /// kept in sync.
+    #[test]
+    fn clicking_outside_dismisses() {
+        let mut ui = open(20, 8);
+        let got = facts(click(&mut ui, 18, 7));
+        assert!(
+            got.contains(&UiFact::CloseContextMenu),
+            "a click outside must close the menu, got {got:?}"
+        );
+    }
+
+    /// Hovering a row moves the highlight, which the old component did through
+    /// a hover-target walk and a `HoverTarget::ContextMenuItem` round trip.
+    #[test]
+    fn hovering_a_row_highlights_it() {
+        let mut ui = open(20, 8);
+        let got = facts(ui.dispatch(Input::Move {
+            pos: Point::new(4, 3),
+            mods: Mods::NONE,
+        }));
+        assert!(
+            got.contains(&UiFact::HighlightContextMenuItem(1)),
+            "got {got:?}"
+        );
+    }
+
+    /// A right-click inside is swallowed so the menu stays put rather than
+    /// being re-opened or re-targeted.
+    #[test]
+    fn a_right_click_inside_is_swallowed() {
+        let mut ui = open(20, 8);
+        let pos = Point::new(4, 2);
+        let mut msgs = ui.dispatch(Input::Press {
+            pos,
+            button: MouseButton::Right,
+            mods: Mods::NONE,
+        });
+        msgs.extend(ui.dispatch(Input::Release {
+            pos,
+            button: MouseButton::Right,
+            mods: Mods::NONE,
+        }));
+        let got = facts(msgs);
+        assert!(got.contains(&UiFact::Consumed), "got {got:?}");
     }
 }
