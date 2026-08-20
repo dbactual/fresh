@@ -19,4 +19,3 @@ pub mod fold;
 pub mod frame;
 pub mod input;
 pub mod msg;
-pub mod status_bar;

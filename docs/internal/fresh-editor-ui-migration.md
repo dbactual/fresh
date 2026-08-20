@@ -1208,6 +1208,16 @@ list.
 
 ### 6.2 Open decisions — settle each before the wave it blocks
 
+0. **Migrate in paint order** — **decided**. There is one fold and it runs
+   after every legacy painter, so anything native paints above everything that
+   has not migrated. `fold` interleaves correctly *within* the display list but
+   cannot across the seam, because the legacy painters are not in it. So a
+   region may become native only once everything that paints over it already
+   has: top-down through the old paint order, overlays first. The failure is
+   silent — the status bar is next and popups paint over its row — so the rule
+   is recorded on `fold_native` where the next person will meet it. Splitting
+   the fold into passes keyed to the legacy z-bands is the fallback if the
+   order ever becomes impractical.
 1. ~~**The fold-callback API**~~ — **prototyped** (§5.0). `HostPainter` +
    `impl HostPainter for Editor`; paint order, clipping, the caret rule and the
    borrow are covered by tests. What remains is threading real per-frame state
@@ -1229,14 +1239,18 @@ list.
    `{offset, content, window}`; the plugin overview-ruler marker API has no
    expression. Extend the library's scrollbar, keep scrollbars behind the
    `Host` leaf, or drop the API.
-5. **The message-type split** (blocks M0). `UiMsg { Action(..), … }` is the
-   shape (§2.9); decide what stays a UI-geometry message consumed by `update`
-   (click→byte, drag→offset, tab-select) versus what becomes an `Action` in
-   the keybinding namespace.
-6. **Frame scheduling and rebuild cost** (blocks M1). Who calls `ui.frame` and
-   when; which subtrees must be `Shared`; what the M0 benchmark (§4.7)
-   actually measures at a sustained input rate.
-7. **Row visibility under squeeze** (blocks S1). When the visible fixed rows
+5. ~~**The message-type split**~~ — **decided and shipped** as
+   `UiMsg::{Action, Ui(UiFact)}` (`view/shell/msg.rs`). Anything bindable stays
+   an `Action`; positional facts are `UiFact` and are never serialized.
+6. **Frame scheduling and rebuild cost** — still open, and no longer gating.
+   It was written as an M0 exit criterion; S1, the context-menu wave and the
+   frame swap all shipped without it, so calling it a gate was wrong. The
+   measurement is still worth taking (a full chrome rebuild per frame, plus a
+   `Vec<String>` of labels per open menu), but it is a performance question to
+   answer with a profile, not a precondition.
+7. **Row visibility under squeeze** — still open; S1 shipped without deciding
+   it, and the divergence is *recorded* by
+   `squeeze_band_starves_a_different_row_than_ratatui`, not resolved by it. When the visible fixed rows
    cannot fit, `fresh-ui` and ratatui starve different rows (§5.0). Decide
    which rows `build()` drops as a function of available height, making the
    choice explicit app state instead of inheriting either engine's starvation

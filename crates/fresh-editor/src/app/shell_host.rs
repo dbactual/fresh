@@ -180,28 +180,6 @@ impl crate::view::shell::fold::HostPainter for Editor {
     }
 }
 
-/// A compile-time proof of the arrangement the shell requires: the display
-/// list is borrowed from the `Ui` while the fold holds `&mut Editor` and
-/// `&mut Buffer`. This type-checks only because the `Ui` is a separate object
-/// from the `Editor` — the constraint documented on
-/// [`crate::view::shell::fold`]. Never called; it exists to fail the build if
-/// that arrangement is ever broken.
-#[allow(dead_code)]
-fn _the_ui_must_not_live_on_the_editor(
-    editor: &mut Editor,
-    ui: &mut fresh_ui::Ui<crate::view::shell::msg::UiMsg>,
-    buf: &mut Buffer,
-    frame: crate::view::shell::frame::Frame,
-) {
-    use crate::view::shell::frame::frame_tree;
-    let palette = |_: &fresh_ui::ThemeKey| ratatui::style::Style::default();
-    let spec = ui.frame(
-        frame_tree(frame),
-        fresh_ui::Size::new(buf.area.width, buf.area.height),
-    );
-    let _caret = crate::view::shell::fold::fold(spec, buf, &palette, editor);
-}
-
 /// The backend's half of theming: a theme name resolved to concrete colours.
 ///
 /// `fresh-ui` never says what anything looks like — an item carries a

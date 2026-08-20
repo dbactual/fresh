@@ -74,19 +74,6 @@ impl Editor {
 
         let (is_double_click, is_triple_click) = self.detect_multi_click(&mouse_event, col, row);
 
-        // The shell sees the pointer before the chrome tree does. Surfaces
-        // that have migrated answer here — today the context menu — and the
-        // walk below is the floor for everything else. Whether the tree took
-        // the event is reported by `dispatch`, not inferred from whether it
-        // had anything to say: a hover moves a highlight without claiming, and
-        // a right-click outside a menu closes it while staying available to
-        // open the next one.
-        if let Some(input) = crate::view::shell::input::mouse(mouse_event) {
-            if self.shell_dispatch(input) {
-                return Ok(true);
-            }
-        }
-
         // Modal mouse-capture, offered in RANK order over the derived
         // overlay stack: the first component whose modal surface is up
         // claims the whole mouse channel. Every capturing component
@@ -114,6 +101,23 @@ impl Editor {
                 ) {
                     return result;
                 }
+            }
+        }
+
+        // Then the migration shell — stage two of three, and deliberately
+        // *after* the capture band above. A full-screen modal (Settings, the
+        // keybinding editor, workspace trust) must outrank anything in the
+        // tree; running the shell first would invert that, letting a layer
+        // answer a pointer the modal had already claimed. The legacy walk
+        // below stays the floor.
+        //
+        // Whether the tree took the event is reported by `dispatch`, not
+        // inferred from whether it had anything to say: a hover moves a
+        // highlight without claiming, and a right-click outside a menu closes
+        // it while staying available to open the next one.
+        if let Some(input) = crate::view::shell::input::mouse(mouse_event) {
+            if self.shell_dispatch(input) {
+                return Ok(true);
             }
         }
 

@@ -189,7 +189,16 @@ impl Editor {
         // The shell's tree is retained across frames — element state, focus and
         // the dirty set live on it — so it is moved out for the duration of the
         // frame rather than borrowed from `self`. See `Editor::shell_ui`.
-        let mut ui = self.shell_ui.take().unwrap_or_default();
+        // `expect`, not `unwrap_or_default`: silently substituting a fresh
+        // `Ui` would discard every element's state, the focus position and the
+        // dirty set, and the frame would still render — the retained tree's
+        // whole point, lost without a symptom. If this is ever `None` a
+        // re-entrant path took it and did not put it back, which is a bug in
+        // that path.
+        let mut ui = self
+            .shell_ui
+            .take()
+            .expect("the shell tree is taken and returned within one frame");
         let regions = {
             let spec = ui.frame(
                 crate::view::shell::frame::frame_tree(shell.clone()),
@@ -968,10 +977,12 @@ impl Editor {
         // its own function.
         {
             let palette = self.shell_palette();
-            if let Some(ui) = self.shell_ui.take() {
-                crate::view::shell::fold::fold_native(ui.spec(), frame.buffer_mut(), &palette);
-                self.shell_ui = Some(ui);
-            }
+            let ui = self
+                .shell_ui
+                .take()
+                .expect("the shell tree is taken and returned within one frame");
+            crate::view::shell::fold::fold_native(ui.spec(), frame.buffer_mut(), &palette);
+            self.shell_ui = Some(ui);
         }
 
         // Chrome theme-key provenance (status bar, menu, tabs, file explorer,

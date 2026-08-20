@@ -60,11 +60,28 @@ impl<F: Fn(&ThemeKey) -> Style> Palette for F {
 ///
 /// The migration's working state: the frame is a `fresh-ui` tree, but most of
 /// its regions are still `Host` leaves painted by the code that always painted
-/// them. This folds the native items and skips the hosts, so a region can move
-/// into the tree on its own without the ones around it having to move first.
+/// them. This folds the native items and skips the hosts.
+///
+/// # Migrate in paint order
+///
+/// There is one fold, and it runs *after* every legacy painter, so **anything
+/// native paints above everything that has not migrated**. Within the display
+/// list `fold` interleaves correctly by paint order; across the seam it cannot,
+/// because the legacy painters are not in the list.
+///
+/// The rule that follows: a region may become native only once everything that
+/// paints *over* it already has. Migration proceeds top-down through the old
+/// paint order — overlays first (the context menu, topmost, went first), then
+/// what they cover.
+///
+/// Getting this wrong is silent. The status bar is the next candidate and
+/// popups deliberately paint over its row, so migrating it before them would
+/// put the bar on top of the popup with nothing failing to say so. Splitting
+/// the fold into passes keyed to the legacy z-bands is the alternative if that
+/// order ever becomes impractical; it is not needed while the order holds.
 ///
 /// When the last region is native this collapses into [`fold`], whose
-/// `HostPainter` is the general form.
+/// `HostPainter` is the general form, and the rule retires with it.
 pub fn fold_native(spec: &LayoutSpec, buf: &mut Buffer, palette: &dyn Palette) -> Caret {
     struct Skip;
     impl HostPainter for Skip {
@@ -411,12 +428,16 @@ mod tests {
         );
     }
 
-    /// **The borrow shape**, as a compile-time proof: the fold reads the spec
-    /// off the `Ui` while the callback holds `&mut` on a separate host object.
-    /// This only type-checks because the `Ui` is *not* stored on the host —
-    /// the constraint documented at the top of this module.
+    /// `fold`'s signature must keep admitting a **mutable** host while the
+    /// display list is borrowed from the `Ui` — that is what lets a host
+    /// region take the `with_all_mut` split it needs to paint a buffer. A
+    /// `fold` that took `&mut Ui`, or a `HostPainter` taking `&self`, would
+    /// fail to compile here.
+    ///
+    /// It does not prove where the `Ui` is stored; that is enforced at the
+    /// call site by the `expect` in `render`.
     #[test]
-    fn the_ui_and_the_host_are_borrowed_disjointly() {
+    fn fold_admits_a_mutable_host_while_the_spec_is_borrowed() {
         struct Host {
             painted: u32,
         }
@@ -462,19 +483,5 @@ mod native_tests {
         let before = buf.clone();
         fold_native(&spec, &mut buf, &plain);
         assert_eq!(buf, before, "host regions must be left to their painters");
-    }
-
-    /// And a native region *is* painted, so a surface starts drawing through
-    /// the fold the moment it stops being a host.
-    #[test]
-    fn a_native_region_is_painted() {
-        use crate::view::shell::status_bar::{status_bar, Segment, Side};
-        let mut ui: Ui<()> = Ui::new();
-        let segs = [Segment::new("mode", "NORMAL", Side::Left)];
-        let spec = ui.frame(status_bar(&segs), Size::new(20, 1)).clone();
-        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 1));
-        fold_native(&spec, &mut buf, &plain);
-        let row: String = (0..20).map(|x| buf[(x, 0)].symbol().to_string()).collect();
-        assert!(row.starts_with("NORMAL"), "got {row:?}");
     }
 }
