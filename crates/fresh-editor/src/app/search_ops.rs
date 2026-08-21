@@ -40,6 +40,95 @@ impl Editor {
             .update_search_highlights(query, search_fg, search_bg);
     }
 
+    /// Emacs-isearch live jump: while the search prompt is open, every
+    /// edit of the query moves the cursor to the match the query selects —
+    /// the first match at or after the position where the prompt opened
+    /// (wrapping to the first match when none follows it). Mirrors
+    /// `isearch-forward`: typing extends the match monotonically, deleting
+    /// retreats, and the status bar carries the live `match N of M` count.
+    ///
+    /// Deliberately does NOT commit `search_state` — issue #2111 keeps
+    /// F3/Shift+F3 re-running the search under the current match-mode flags
+    /// while the bar is open; committing here would break that. The jump
+    /// and count are computed fresh from the query each keystroke.
+    ///
+    /// Large (lazy-loaded) buffers keep the viewport-preview behavior only:
+    /// the chunked async scan isn't shaped for per-keystroke restarts.
+    pub(super) fn live_isearch_jump(&mut self, query: &str) {
+        if !self.config.editor.search_jump_while_typing {
+            return;
+        }
+        if query.is_empty() {
+            return;
+        }
+        if self.active_state().buffer.is_large_file() {
+            return;
+        }
+        let Ok(regex) = self.active_window().build_search_regex(query) else {
+            // Invalid pattern so far (e.g. a lone `(`): preview only.
+            return;
+        };
+        let origin = self
+            .active_window()
+            .search_prompt_origin
+            .unwrap_or_else(|| self.active_cursors().primary().position);
+
+        let buffer_content = {
+            let state = self.active_state_mut();
+            let total_bytes = state.buffer.len();
+            match state.buffer.get_text_range_mut(0, total_bytes) {
+                Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+                Err(e) => {
+                    tracing::warn!("Failed to load buffer for live search: {}", e);
+                    return;
+                }
+            }
+        };
+
+        // One pass collects the total count (capped), the first match at or
+        // after the origin, and its 1-based index for the count text — the
+        // same cap `perform_search` applies.
+        let mut total: usize = 0;
+        let mut first_at_or_after: Option<usize> = None;
+        let mut first_overall: Option<usize> = None;
+        for m in regex.find_iter(&buffer_content) {
+            total += 1;
+            if first_overall.is_none() {
+                first_overall = Some(m.start());
+            }
+            if m.start() >= origin && first_at_or_after.is_none() {
+                first_at_or_after = Some(m.start());
+                if total >= SearchState::MAX_MATCHES {
+                    break;
+                }
+            } else if total >= SearchState::MAX_MATCHES {
+                break;
+            }
+        }
+
+        let Some(pos) = first_at_or_after.or(first_overall) else {
+            let msg = t!("search.no_occurrences", search = query).to_string();
+            self.set_status_message(msg);
+            return;
+        };
+        self.move_cursor_to_match(pos);
+        // Index of the selected match among all matches: count matches
+        // before `pos` — already accumulated iff `first_at_or_after` fired,
+        // otherwise the wrapped selection is the first match (index 1).
+        let current = if first_at_or_after.is_some() {
+            regex
+                .find_iter(&buffer_content)
+                .take_while(|m| m.start() < pos)
+                .count()
+                + 1
+        } else {
+            1
+        };
+        self.set_status_message(
+            t!("search.match_of", current = current, total = total).to_string(),
+        );
+    }
+
     /// Perform a search and update search state.
     ///
     /// For large files (lazy-loaded buffers), this starts an incremental

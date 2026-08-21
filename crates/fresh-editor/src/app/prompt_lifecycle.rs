@@ -41,6 +41,11 @@ impl Editor {
     ) {
         // Reset any previously stored selection range
         self.active_window_mut().pending_search_range = None;
+        // Anchor for incremental search: every live jump restarts from
+        // where the cursor sat when the prompt opened (emacs isearch
+        // semantics — see `live_isearch_jump`).
+        let origin = self.active_cursors().primary().position;
+        self.active_window_mut().search_prompt_origin = Some(origin);
 
         let selection_range = self.active_cursors().primary().selection_range();
 
@@ -84,6 +89,7 @@ impl Editor {
                 self.get_or_create_prompt_history("search").init_at_last();
             }
             self.update_search_highlights(&text);
+            self.live_isearch_jump(&text);
         }
     }
 
@@ -1343,6 +1349,9 @@ impl Editor {
             PromptType::Search | PromptType::ReplaceSearch | PromptType::QueryReplaceSearch => {
                 // Update incremental search highlights as user types
                 self.update_search_highlights(&input);
+                // Emacs isearch: each keystroke also jumps the cursor to the
+                // match the growing query selects — not just preview paints.
+                self.live_isearch_jump(&input);
                 // Reset history navigation when user types - allows Up to navigate history
                 if let Some(history) = self.active_window_mut().prompt_histories.get_mut("search") {
                     history.reset_navigation();

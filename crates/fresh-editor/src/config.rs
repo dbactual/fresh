@@ -1172,6 +1172,16 @@ pub struct EditorConfig {
     #[schemars(extend("x-section" = "Display"))]
     pub highlight_occurrences: bool,
 
+    /// Emacs-isearch live jumping: while the search prompt is open, every
+    /// edit of the query also moves the cursor to the match the query
+    /// selects (and shows the live `Match N of M` count), instead of only
+    /// preview-highlighting matches until the search is confirmed.
+    /// Default: `false` (VS Code-style preview; the search jumps on
+    /// Enter / F3 / re-pressing the search key).
+    #[serde(default = "default_false")]
+    #[schemars(extend("x-section" = "Editing"))]
+    pub search_jump_while_typing: bool,
+
     /// Hide the current-line background highlight whenever a selection is
     /// visible.  When `true` (default: `false`), the `current_line_bg` fill
     /// is suppressed for the active split as soon as any cursor has a
@@ -1974,6 +1984,7 @@ impl Default for EditorConfig {
             syntax_highlighting: true,
             highlight_current_line: true,
             highlight_occurrences: true,
+            search_jump_while_typing: false,
             hide_current_line_on_selection: false,
             highlight_current_column: false,
             line_wrap: true,

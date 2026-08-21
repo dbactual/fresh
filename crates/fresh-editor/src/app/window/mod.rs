@@ -743,6 +743,11 @@ pub struct Window {
     /// Range that should be reused when the next search is confirmed
     /// (e.g. after the user picks a hit in the search overlay).
     pub pending_search_range: Option<std::ops::Range<usize>>,
+    /// Cursor position (byte offset) where the currently-open search prompt
+    /// began — the anchor incremental search restarts from on every edit,
+    /// so live jumps advance monotonically while typing and retreat when
+    /// characters are deleted (emacs isearch semantics).
+    pub search_prompt_origin: Option<usize>,
 
     /// Last live-grep panel state (cached so re-opening the panel
     /// preserves the user's query / scroll / selection).
@@ -2336,6 +2341,7 @@ impl Window {
                 "search".to_string(),
             ),
             pending_search_range: None,
+            search_prompt_origin: None,
             live_grep_last_state: None,
             overlay_preview_state: None,
             file_rapid_change_counts: HashMap::new(),

@@ -259,6 +259,7 @@ pub mod scrolling;
 pub mod search;
 pub mod search_center_on_scroll;
 pub mod search_down_stall_after_wrap;
+pub mod search_isearch_live_jump;
 pub mod search_navigation_after_move;
 pub mod search_replace;
 pub mod search_selection_on_punctuation;
