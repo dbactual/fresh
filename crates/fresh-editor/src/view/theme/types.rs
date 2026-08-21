@@ -1266,6 +1266,17 @@ pub struct SearchColors {
     /// Search match text color
     #[serde(default = "default_search_match_fg")]
     pub match_fg: ColorDef,
+    /// Background of the match containing the primary cursor (the
+    /// "current" match while stepping through results). Styled apart
+    /// from the other matches so the user can see where they are — the
+    /// emacs isearch vs lazy-highlight distinction. When unset in a
+    /// user theme, falls back to `match_bg`.
+    #[serde(default = "default_search_current_match_bg")]
+    pub current_match_bg: ColorDef,
+    /// Text color of the current match. Falls back to `match_fg` when a
+    /// user theme does not set it.
+    #[serde(default = "default_search_current_match_fg")]
+    pub current_match_fg: ColorDef,
     /// Background color for jump labels (e.g. flash plugin labels).
     /// Should be visually distinct from `match_bg` so labels stand
     /// out against highlighted matches.  Default: bright magenta.
@@ -1284,6 +1295,15 @@ fn default_search_match_bg() -> ColorDef {
 }
 fn default_search_match_fg() -> ColorDef {
     ColorDef::Rgb(255, 255, 255)
+}
+// The current match is the emacs isearch face: brighter, more saturated
+// than the lazy-highlight-style match colors above, so stepping through
+// results visibly moves a distinct highlight.
+fn default_search_current_match_bg() -> ColorDef {
+    ColorDef::Rgb(255, 215, 0) // gold
+}
+fn default_search_current_match_fg() -> ColorDef {
+    ColorDef::Rgb(0, 0, 0)
 }
 // Mirrors flash.nvim's default FlashLabel (links to Substitute, which
 // is a magenta-family colour in most colorschemes).  The pairing is
@@ -1622,6 +1642,8 @@ pub struct Theme {
     // Search colors
     pub search_match_bg: Color,
     pub search_match_fg: Color,
+    pub search_current_match_bg: Color,
+    pub search_current_match_fg: Color,
     pub search_label_bg: Color,
     pub search_label_fg: Color,
 
@@ -1900,6 +1922,8 @@ impl From<ThemeFile> for Theme {
                 .unwrap_or_else(|| file.diagnostic.error_fg.clone().into()),
             search_match_bg: file.search.match_bg.into(),
             search_match_fg: file.search.match_fg.into(),
+            search_current_match_bg: file.search.current_match_bg.into(),
+            search_current_match_fg: file.search.current_match_fg.into(),
             search_label_bg: file.search.label_bg.into(),
             search_label_fg: file.search.label_fg.into(),
             diagnostic_error_fg: file.diagnostic.error_fg.into(),
@@ -2076,6 +2100,8 @@ impl From<Theme> for ThemeFile {
             search: SearchColors {
                 match_bg: theme.search_match_bg.into(),
                 match_fg: theme.search_match_fg.into(),
+                current_match_bg: theme.search_current_match_bg.into(),
+                current_match_fg: theme.search_current_match_fg.into(),
                 label_bg: theme.search_label_bg.into(),
                 label_fg: theme.search_label_fg.into(),
             },
@@ -2577,6 +2603,8 @@ theme_color_keys! {
         "label_fg" => color search_label_fg,
         "match_bg" => color search_match_bg,
         "match_fg" => color search_match_fg,
+        "current_match_bg" => color search_current_match_bg,
+        "current_match_fg" => color search_current_match_fg,
     },
 }
 

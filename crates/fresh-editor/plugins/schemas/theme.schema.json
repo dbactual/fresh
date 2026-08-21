@@ -417,6 +417,16 @@
           255,
           255
         ],
+        "current_match_bg": [
+          255,
+          215,
+          0
+        ],
+        "current_match_fg": [
+          0,
+          0,
+          0
+        ],
         "label_bg": [
           199,
           78,
@@ -1614,6 +1624,24 @@
             255,
             255,
             255
+          ]
+        },
+        "current_match_bg": {
+          "description": "Background of the match containing the primary cursor (the\n\"current\" match while stepping through results). Styled apart\nfrom the other matches so the user can see where they are — the\nemacs isearch vs lazy-highlight distinction. When unset in a\nuser theme, falls back to `match_bg`.",
+          "$ref": "#/$defs/ColorDef",
+          "default": [
+            255,
+            215,
+            0
+          ]
+        },
+        "current_match_fg": {
+          "description": "Text color of the current match. Falls back to `match_fg` when a\nuser theme does not set it.",
+          "$ref": "#/$defs/ColorDef",
+          "default": [
+            0,
+            0,
+            0
           ]
         },
         "label_bg": {

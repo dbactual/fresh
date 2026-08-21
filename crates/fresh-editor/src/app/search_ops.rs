@@ -34,10 +34,17 @@ impl Editor {
     /// Update search highlights in visible viewport only (for incremental search)
     /// This is called as the user types in the search prompt for real-time feedback
     pub(super) fn update_search_highlights(&mut self, query: &str) {
-        let search_bg = self.theme.read().unwrap().search_match_bg;
-        let search_fg = self.theme.read().unwrap().search_match_fg;
+        let (search_bg, search_fg, current_bg, current_fg) = {
+            let theme = self.theme.read().unwrap();
+            (
+                theme.search_match_bg,
+                theme.search_match_fg,
+                theme.search_current_match_bg,
+                theme.search_current_match_fg,
+            )
+        };
         self.active_window_mut()
-            .update_search_highlights(query, search_fg, search_bg);
+            .update_search_highlights(query, search_fg, search_bg, current_fg, current_bg);
     }
 
     /// Perform a search and update search state.
@@ -184,8 +191,15 @@ impl Editor {
             self.refresh_search_overlays();
         } else {
             // Small file: overlays for ALL matches so markers auto-track edits
-            let search_bg = self.theme.read().unwrap().search_match_bg;
-            let search_fg = self.theme.read().unwrap().search_match_fg;
+            let (search_bg, search_fg, current_bg, current_fg) = {
+                let theme = self.theme.read().unwrap();
+                (
+                    theme.search_match_bg,
+                    theme.search_match_fg,
+                    theme.search_current_match_bg,
+                    theme.search_current_match_fg,
+                )
+            };
             let ns = self.active_window().search_namespace.clone();
             let state = self.active_state_mut();
             state.overlays.clear_namespace(&ns, &mut state.marker_list);
@@ -207,6 +221,10 @@ impl Editor {
                 .with_priority_value(10);
                 state.overlays.add(overlay);
             }
+
+            // Position the current-match overlay after the cursor has
+            // been moved to the first match.
+            self.update_current_match_overlay(current_fg, current_bg);
         }
 
         let cap_suffix = if capped { "+" } else { "" };
@@ -242,8 +260,15 @@ impl Editor {
     /// so it is O(log N + visible_matches) regardless of total match count.
     pub(super) fn refresh_search_overlays(&mut self) {
         let _span = tracing::info_span!("refresh_search_overlays").entered();
-        let search_bg = self.theme.read().unwrap().search_match_bg;
-        let search_fg = self.theme.read().unwrap().search_match_fg;
+        let (search_bg, search_fg, current_bg, current_fg) = {
+            let theme = self.theme.read().unwrap();
+            (
+                theme.search_match_bg,
+                theme.search_match_fg,
+                theme.search_current_match_bg,
+                theme.search_current_match_fg,
+            )
+        };
         let ns = self.active_window().search_namespace.clone();
 
         // Determine the visible byte range from the active viewport
@@ -321,6 +346,49 @@ impl Editor {
             .with_priority_value(10);
             state.overlays.add(overlay);
         }
+
+        // Reposition the current-match overlay on top of the freshly
+        // rebuilt plain overlays (viewport-scoped path).
+        self.update_current_match_overlay(current_fg, current_bg);
+    }
+
+    /// Reposition the current-match overlay: the single higher-priority
+    /// overlay (own namespace, priority 11) marking the committed search's
+    /// current match — the one `current_match_index` points at, which the
+    /// cursor sits on after a jump. Plain per-match overlays stay untouched;
+    /// only this one moves when the user steps through results.
+    fn update_current_match_overlay(
+        &mut self,
+        current_fg: ratatui::style::Color,
+        current_bg: ratatui::style::Color,
+    ) {
+        let cur_ns = self.active_window().search_current_namespace.clone();
+        // Resolve the current match range from the committed search state.
+        let range = self.active_window().search_state.as_ref().and_then(|ss| {
+            let idx = ss.current_match_index?;
+            let pos = *ss.matches.get(idx)?;
+            let len = *ss.match_lengths.get(idx).unwrap_or(&0);
+            Some(pos..pos + len)
+        });
+        let state = self.active_state_mut();
+        state
+            .overlays
+            .clear_namespace(&cur_ns, &mut state.marker_list);
+        let Some(range) = range else { return };
+        if range.is_empty() {
+            return;
+        }
+        let style = ratatui::style::Style::default()
+            .fg(current_fg)
+            .bg(current_bg);
+        let overlay = crate::view::overlay::Overlay::with_namespace_fixed_end(
+            &mut state.marker_list,
+            range,
+            crate::view::overlay::OverlayFace::Style { style },
+            cur_ns,
+        )
+        .with_priority_value(11);
+        state.overlays.add(overlay);
     }
 
     /// Check whether the viewport has scrolled since we last created search
@@ -618,6 +686,14 @@ impl Editor {
             let matches_len = match_positions.len();
 
             self.move_cursor_to_match(match_pos);
+
+            // Follow the jump with the current-match overlay so the
+            // distinct highlight tracks the match the cursor landed on.
+            let (cur_fg, cur_bg) = {
+                let theme = self.theme.read().unwrap();
+                (theme.search_current_match_fg, theme.search_current_match_bg)
+            };
+            self.update_current_match_overlay(cur_fg, cur_bg);
 
             self.set_status_message(
                 t!(

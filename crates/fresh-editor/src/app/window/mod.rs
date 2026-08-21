@@ -739,6 +739,9 @@ pub struct Window {
     /// Overlay namespace used for search-result highlights. Per-window
     /// because the overlays it scopes are per-buffer (per-window).
     pub search_namespace: crate::view::overlay::OverlayNamespace,
+    /// Namespace of the one current-match overlay (see
+    /// `update_current_match_overlay`).
+    pub search_current_namespace: crate::view::overlay::OverlayNamespace,
 
     /// Range that should be reused when the next search is confirmed
     /// (e.g. after the user picks a hit in the search overlay).
@@ -2335,6 +2338,12 @@ impl Window {
             search_namespace: crate::view::overlay::OverlayNamespace::from_string(
                 "search".to_string(),
             ),
+            // Distinct namespace for the current-match overlay so it can be
+            // swapped independently of the plain per-match overlays when the
+            // user steps through results (find_next / find_previous).
+            search_current_namespace: crate::view::overlay::OverlayNamespace::from_string(
+                "search-current".to_string(),
+            ),
             pending_search_range: None,
             live_grep_last_state: None,
             overlay_preview_state: None,
@@ -2953,8 +2962,12 @@ impl Window {
     /// preserving search state so F3/Shift+F3 still work.
     pub fn clear_search_overlays(&mut self) {
         let ns = self.search_namespace.clone();
+        let cur_ns = self.search_current_namespace.clone();
         let state = self.active_state_mut();
         state.overlays.clear_namespace(&ns, &mut state.marker_list);
+        state
+            .overlays
+            .clear_namespace(&cur_ns, &mut state.marker_list);
     }
 
     /// Clear all search highlights from the active buffer and reset
@@ -3620,6 +3633,8 @@ impl Window {
         query: &str,
         search_fg: ratatui::style::Color,
         search_bg: ratatui::style::Color,
+        current_fg: ratatui::style::Color,
+        current_bg: ratatui::style::Color,
     ) {
         if query.is_empty() {
             self.clear_search_highlights();
@@ -3627,6 +3642,9 @@ impl Window {
         }
 
         let ns = self.search_namespace.clone();
+        // The primary cursor's position decides which visible match is the
+        // "current" one (the match at or containing it).
+        let cursor_pos = self.active_cursors().primary().position;
 
         // Share the one search-regex builder so highlight anchoring (`^`/`$`
         // line-matching) stays consistent with the actual search results.
@@ -3648,8 +3666,16 @@ impl Window {
             .map(|vs| (vs.viewport.top_byte(), vs.viewport.height.saturating_sub(2)))
             .unwrap_or((0, 20));
 
+        // The current-match overlay is rebuilt below alongside the plain
+        // ones; clear its namespace here so it never duplicates across
+        // incremental updates. (Both namespaces are cloned before the
+        // `active_state_mut` borrow.)
+        let cur_ns = self.search_current_namespace.clone();
         let state = self.active_state_mut();
         state.overlays.clear_namespace(&ns, &mut state.marker_list);
+        state
+            .overlays
+            .clear_namespace(&cur_ns, &mut state.marker_list);
 
         let visible_start = top_byte;
         let mut visible_end = top_byte;
@@ -3680,6 +3706,27 @@ impl Window {
             )
             .with_priority_value(10);
             state.overlays.add(overlay);
+
+            // The match at (or containing) the primary cursor is the
+            // "current" one: a separate, higher-priority overlay in its
+            // own namespace so it can be repositioned independently of the
+            // plain per-match overlays (which are rebuilt wholesale). The
+            // emacs isearch vs lazy-highlight distinction.
+            if cursor_pos >= absolute_pos && cursor_pos < absolute_pos + match_len {
+                let current_style = ratatui::style::Style::default()
+                    .fg(current_fg)
+                    .bg(current_bg);
+                let overlay = crate::view::overlay::Overlay::with_namespace_fixed_end(
+                    &mut state.marker_list,
+                    absolute_pos..(absolute_pos + match_len),
+                    crate::view::overlay::OverlayFace::Style {
+                        style: current_style,
+                    },
+                    cur_ns.clone(),
+                )
+                .with_priority_value(11);
+                state.overlays.add(overlay);
+            }
         }
     }
 
